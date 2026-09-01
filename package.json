@@ -11,7 +11,8 @@
     "test:whatsapp:codex": "node codex-whatsapp-bridge.js",
     "test:funil": "node scratch/test_offer_funnel.js",
     "test:bling-events": "node scratch/test_bling_event_store.js",
-    "test:grupo": "node scratch/test_group_sales.js"
+    "test:grupo": "node scratch/test_group_sales.js",
+    "test:automacoes": "node scratch/test_automation_engine.js"
   },
   "dependencies": {
     "@wppconnect-team/wppconnect": "^1.31.1",

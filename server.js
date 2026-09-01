@@ -14,6 +14,7 @@ const { OfferFunnelStore } = require('./offer-funnel-store');
 const { BlingEventStore } = require('./bling-event-store');
 const { GroupSalesStore } = require('./group-sales-store');
 const { GroupSalesEngine } = require('./group-sales-engine');
+const { executeAutomation } = require('./automation-engine');
 
 // Credenciais externas são configuradas no ambiente (localmente pelo .env e,
 // em produção, pelo painel da hospedagem). Nunca coloque chaves neste arquivo.
@@ -291,6 +292,12 @@ const ALLOWED_ORIGINS = String(process.env.ALLOWED_ORIGINS || '')
   .split(',')
   .map(origin => origin.trim().replace(/\/$/, ''))
   .filter(Boolean);
+const automationJobs = new Map();
+
+function pruneAutomationJobs() {
+  const jobs = [...automationJobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  jobs.slice(200).forEach(job => automationJobs.delete(job.id));
+}
 
 function allowedOrigin(req) {
   const origin = String(req.headers.origin || '').replace(/\/$/, '');
@@ -1184,6 +1191,85 @@ function handler(req, res) {
     try { return JSON.parse(body || '{}'); }
     catch (e) { throw e; }
   });
+
+  if (reqPath === '/api/integracoes/status' && req.method === 'GET') {
+    Promise.allSettled([
+      getLinxToken(),
+      blingTokens.access_token ? blingRequest('GET', '/produtos?pagina=1&limite=1') : Promise.reject(new Error('Bling não autenticado')),
+    ]).then(([linx, bling]) => {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ data: [
+        { id: 'linx', name: 'Linx', state: linx.status === 'fulfilled' ? 'operacional' : 'offline', description: linx.status === 'fulfilled' ? 'Login e consulta disponíveis.' : linx.reason?.message },
+        { id: 'bling', name: 'Bling', state: bling.status === 'fulfilled' ? 'operacional' : 'offline', description: bling.status === 'fulfilled' ? 'API autenticada e disponível.' : bling.reason?.message },
+        { id: 'backend', name: 'Backend', state: 'operacional', description: 'Serviço de automações disponível.' },
+      ] }));
+    });
+    return;
+  }
+
+  if (reqPath === '/api/automacoes' && req.method === 'POST') {
+    readJsonBody(req).then(body => {
+      const operation = String(body.operacao || '').trim();
+      const sku = String(body.sku || '').trim().toUpperCase();
+      const allowed = new Set(['cadastrar-produto', 'variacoes-ausentes', 'criar-kit', 'atualizar-estoque', 'atualizar-conteudo', 'verificar-cadastro', 'sincronizar-tudo']);
+      if (!allowed.has(operation) || !sku) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Informe uma operação válida e o SKU.' }));
+        return;
+      }
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      const steps = ['linx', 'produto', 'pai', 'grade', 'bling', 'comparando', 'gravando', 'estoque', 'final'].map(step => ({ id: step, state: 'waiting' }));
+      const job = { id, operation, sku, status: 'processing', createdAt: now, updatedAt: now, steps, result: null, error: null };
+      automationJobs.set(id, job);
+      pruneAutomationJobs();
+      setImmediate(async () => {
+        const progress = (stepId, state) => {
+          const step = job.steps.find(item => item.id === stepId);
+          if (step) step.state = state;
+          job.updatedAt = new Date().toISOString();
+        };
+        try {
+          const result = await executeAutomation({ operation, sku }, { consultLinx: consultarProdutoLinxInterno, blingRequest, colors: coresMap }, progress);
+          progress('final', result.warnings?.length ? 'warning' : 'done');
+          job.result = result;
+          job.status = result.warnings?.length ? 'warning' : 'completed';
+        } catch (error) {
+          job.status = 'error';
+          job.error = { message: error.message, step: error.step || job.steps.find(item => item.state === 'running')?.id || 'final' };
+          const running = job.steps.find(item => item.state === 'running');
+          if (running) running.state = 'error';
+        }
+        job.updatedAt = new Date().toISOString();
+      });
+      res.writeHead(202, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ id, status: job.status }));
+    }).catch(error => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message }));
+    });
+    return;
+  }
+
+  const automationMatch = reqPath.match(/^\/api\/automacoes\/([0-9a-f-]+)$/i);
+  if (automationMatch && req.method === 'GET') {
+    const job = automationJobs.get(automationMatch[1]);
+    if (!job) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Automação não encontrada.' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify(job));
+    return;
+  }
+
+  if (reqPath === '/api/automacoes' && req.method === 'GET') {
+    const jobs = [...automationJobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 100);
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ data: jobs }));
+    return;
+  }
 
   if (reqPath === '/api/bling/webhooks' && req.method === 'POST') {
     readRawBody(req).then(rawBody => {
