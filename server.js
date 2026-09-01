@@ -292,6 +292,10 @@ const ALLOWED_ORIGINS = String(process.env.ALLOWED_ORIGINS || '')
   .split(',')
   .map(origin => origin.trim().replace(/\/$/, ''))
   .filter(Boolean);
+const TRUSTED_APP_ORIGINS = new Set([
+  'https://puket-sku-magic.lovable.app',
+  ...ALLOWED_ORIGINS,
+]);
 const automationJobs = new Map();
 
 function pruneAutomationJobs() {
@@ -303,7 +307,7 @@ function allowedOrigin(req) {
   const origin = String(req.headers.origin || '').replace(/\/$/, '');
   if (!origin) return '';
   if (!IS_PRODUCTION && ALLOWED_ORIGINS.length === 0) return origin;
-  return ALLOWED_ORIGINS.includes(origin) ? origin : '';
+  return TRUSTED_APP_ORIGINS.has(origin) ? origin : '';
 }
 const FUNNEL_ADMIN_TOKEN = String(process.env.FUNNEL_ADMIN_TOKEN || process.env.AGENT_PASSWORD || '').trim();
 let funnelSalesNumber = String(process.env.FUNNEL_SALES_NUMBER || '').replace(/\D/g, '');
