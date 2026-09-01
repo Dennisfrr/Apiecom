@@ -68,7 +68,7 @@ function jwtExpiresSoon(token, marginMs = 2 * 60 * 1000) {
   }
 }
 
-function linxJsonRequest({ hostname, apiPath, body, headers = {} }) {
+function linxJsonRequest({ hostname, apiPath, body, headers = {} }, attempt = 0) {
   return new Promise((resolve, reject) => {
     const jsonBody = JSON.stringify(body || {});
     const request = nodehttps.request({
@@ -81,6 +81,11 @@ function linxJsonRequest({ hostname, apiPath, body, headers = {} }) {
         'content-length': Buffer.byteLength(jsonBody),
         'cache-control': 'no-cache',
         pragma: 'no-cache',
+        origin: 'https://erp.microvix.com.br',
+        referer: 'https://erp.microvix.com.br/',
+        'accept-language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/150 Safari/537.36',
+        connection: 'close',
         ...headers,
       },
       timeout: 30000,
@@ -101,7 +106,14 @@ function linxJsonRequest({ hostname, apiPath, body, headers = {} }) {
       });
     });
     request.on('timeout', () => request.destroy(new Error('Tempo esgotado ao autenticar no Linx')));
-    request.on('error', reject);
+    request.on('error', error => {
+      const transient = error.code === 'ECONNRESET' || /socket hang up/i.test(error.message);
+      if (transient && attempt < 2) {
+        setTimeout(() => linxJsonRequest({ hostname, apiPath, body, headers }, attempt + 1).then(resolve, reject), 500 * (attempt + 1));
+        return;
+      }
+      reject(new Error(`Falha na conexão com o Linx em ${apiPath}: ${error.message}`));
+    });
     request.write(jsonBody);
     request.end();
   });
@@ -424,6 +436,11 @@ async function consultarProdutoLinxInterno(codigo, retry = true) {
         'content-length': Buffer.byteLength(body),
         'cache-control': 'no-cache',
         pragma: 'no-cache',
+        origin: 'https://erp.microvix.com.br',
+        referer: 'https://erp.microvix.com.br/',
+        'accept-language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/150 Safari/537.36',
+        connection: 'close',
       },
       timeout: 30000,
     }, response => {
