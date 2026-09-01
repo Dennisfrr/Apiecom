@@ -1169,7 +1169,11 @@ function handler(req, res) {
 
   if (reqPath === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify({ status: 'ok', service: 'gestao-estoque-api' }));
+    res.end(JSON.stringify({
+      status: 'ok',
+      service: 'gestao-estoque-api',
+      version: String(process.env.RAILWAY_GIT_COMMIT_SHA || 'local').slice(0, 7),
+    }));
     return;
   }
 
