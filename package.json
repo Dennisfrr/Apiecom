@@ -1,0 +1,22 @@
+{
+  "name": "gestao-estoque",
+  "version": "1.0.0",
+  "description": "Scanner de estoque Puket",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "agent:whatsapp": "node whatsapp-agent.js",
+    "agent:whatsapp:codex": "node whatsapp-agent.js",
+    "agent:grupo": "node whatsapp-group-agent.js",
+    "test:whatsapp:codex": "node codex-whatsapp-bridge.js",
+    "test:funil": "node scratch/test_offer_funnel.js",
+    "test:bling-events": "node scratch/test_bling_event_store.js",
+    "test:grupo": "node scratch/test_group_sales.js"
+  },
+  "dependencies": {
+    "@wppconnect-team/wppconnect": "^1.31.1",
+    "dotenv": "^16.6.1",
+    "selfsigned": "^2.4.1",
+    "socket.io": "^4.8.3"
+  }
+}
