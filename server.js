@@ -306,6 +306,8 @@ const ALLOWED_ORIGINS = String(process.env.ALLOWED_ORIGINS || '')
   .filter(Boolean);
 const TRUSTED_APP_ORIGINS = new Set([
   'https://puket-sku-magic.lovable.app',
+  'http://127.0.0.1:8080',
+  'http://localhost:8080',
   ...ALLOWED_ORIGINS,
 ]);
 const automationJobs = new Map();
