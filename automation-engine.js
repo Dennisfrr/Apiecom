@@ -28,18 +28,33 @@ function blingImages(product) {
     ...imageUrls(product?.midia?.imagens?.imagensURL),
   ].filter(Boolean))];
 }
-async function catalogImages(group, requestedSku, deps) {
-  if (typeof deps.catalogSearch !== 'function') return [];
-  const queries = [...new Set([requestedSku, group.parentSku, ...group.items.map(item => item.barcode)].filter(Boolean))];
+function composeDescriptions(catalogDescription, linxDescription) {
+  const catalog = text(catalogDescription);
+  const linx = text(linxDescription);
+  if (!catalog) return linx;
+  if (!linx) return catalog;
+  const comparableCatalog = catalog.replace(/\s+/g, ' ').toLowerCase();
+  const comparableLinx = linx.replace(/\s+/g, ' ').toLowerCase();
+  if (comparableCatalog.includes(comparableLinx)) return catalog;
+  if (comparableLinx.includes(comparableCatalog)) return linx;
+  return `${catalog}\n\n${linx}`.slice(0, 10000);
+}
+async function catalogContent(group, requestedSku, deps) {
+  if (typeof deps.catalogSearch !== 'function') return { images: [], description: '' };
+  const queries = [...new Set([requestedSku, group.parentSku, group.items[0]?.name, ...group.items.map(item => item.barcode)].filter(Boolean))];
   const found = [];
+  let description = '';
   for (const query of queries.slice(0, 3)) {
     try {
       const products = await deps.catalogSearch(query);
-      for (const product of Array.isArray(products) ? products : []) found.push(...imageUrls(product?.imagens));
-      if (found.length) break;
+      for (const product of Array.isArray(products) ? products : []) {
+        found.push(...imageUrls(product?.imagens));
+        if (!description) description = text(product?.descricao);
+      }
+      if (found.length || description) break;
     } catch (_) { /* catálogo é uma fonte complementar */ }
   }
-  return [...new Set(found)];
+  return { images: [...new Set(found)], description };
 }
 function productSpecs(name) {
   const value = text(name).toLowerCase();
@@ -312,8 +327,10 @@ async function previewAutomation({ operation, sku }, deps) {
   const newCount = variations.filter(item => item.status === 'new').length;
   const existingCount = variations.filter(item => item.status === 'existing').length;
   const first = group.items[0];
+  const catalog = await catalogContent(group, normalizedSku, deps);
   const generatedImages = group.items.map(item => item.image).filter(Boolean);
-  const images = [...new Set([...(await catalogImages(group, normalizedSku, deps)), ...generatedImages, ...blingImages(detail)])];
+  const images = [...new Set([...catalog.images, ...generatedImages, ...blingImages(detail)])];
+  const composedDescription = composeDescriptions(catalog.description, first.description);
   return {
     operation,
     requestedSku: normalizedSku,
@@ -322,7 +339,9 @@ async function previewAutomation({ operation, sku }, deps) {
     product: {
       parentSku: group.parentSku,
       name: first.name,
-      description: first.description,
+      description: composedDescription,
+      catalogDescription: catalog.description,
+      linxDescription: first.description,
       image: first.image,
       images,
       price: first.price,
