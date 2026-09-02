@@ -122,6 +122,16 @@ function parentPayload(parentSku, items) {
   };
 }
 
+function applyProductEdits(payload, edits = {}) {
+  const updated = { ...payload };
+  if (text(edits.name)) updated.nome = text(edits.name).slice(0, 180);
+  if (Number.isFinite(Number(edits.price)) && Number(edits.price) >= 0) updated.preco = Number(edits.price);
+  if (typeof edits.description === 'string') updated.descricaoComplementar = edits.description.trim().slice(0, 10000);
+  if (text(edits.ncm)) updated.tributacao = { ...(updated.tributacao || {}), ncm: text(edits.ncm) };
+  if (Number.isInteger(Number(edits.categoryId)) && Number(edits.categoryId) > 0) updated.categoria = { id: Number(edits.categoryId) };
+  return updated;
+}
+
 async function loadGroup(sku, deps, progress) {
   progress('linx', 'running');
   const raw = await deps.consultLinx(sku);
@@ -133,11 +143,11 @@ async function loadGroup(sku, deps, progress) {
   return { parentSku, items };
 }
 
-async function ensureProduct(group, deps, progress, updateContent = false) {
+async function ensureProduct(group, deps, progress, updateContent = false, edits = {}) {
   progress('bling', 'running');
   let parent = await findBlingExact(deps.blingRequest, group.parentSku);
   progress('bling', 'done'); progress('comparando', 'running');
-  const payload = parentPayload(group.parentSku, group.items);
+  const payload = applyProductEdits(parentPayload(group.parentSku, group.items), edits);
   let created = 0;
   let existingCount = 0;
   const warnings = [];
@@ -167,10 +177,12 @@ async function ensureProduct(group, deps, progress, updateContent = false) {
       .map(match => variationPayload(match.item, group.items[0].name, price, inherited));
     created = missing.length;
     progress('comparando', 'done'); progress('gravando', 'running');
-    if (missing.length || updateContent) {
-      const update = { ...detail, ...(updateContent ? payload : {}), codigo: group.parentSku, variacoes: [...existing, ...missing] };
-      if (detail.tributacao) update.tributacao = detail.tributacao;
-      if (detail.categoria) update.categoria = detail.categoria;
+    const hasEdits = Object.keys(edits || {}).length > 0;
+    if (missing.length || updateContent || hasEdits) {
+      const editableUpdate = applyProductEdits({}, edits);
+      const update = { ...detail, ...(updateContent ? payload : {}), ...editableUpdate, codigo: group.parentSku, variacoes: [...existing, ...missing] };
+      if (!edits.ncm && detail.tributacao) update.tributacao = detail.tributacao;
+      if (!edits.categoryId && detail.categoria) update.categoria = detail.categoria;
       await deps.blingRequest('PUT', `/produtos/${parent.id}`, update);
     }
   }
@@ -288,6 +300,14 @@ async function previewAutomation({ operation, sku }, deps) {
       ncm: text(detail?.tributacao?.ncm || first.ncm || DEFAULT_NCM),
       categoryId: detail?.categoria?.id || DEFAULT_CATEGORY_ID,
       brand: text(detail?.marca || 'Puket'),
+      bling: detail ? {
+        name: text(detail.nome),
+        description: text(detail.descricaoComplementar || detail.descricaoCurta),
+        price: number(detail.preco),
+        ncm: text(detail.tributacao?.ncm),
+        categoryId: detail.categoria?.id || null,
+        image: text(detail.imagemURL || detail.midia?.imagens?.externas?.[0]?.link || detail.midia?.imagens?.internas?.[0]?.link),
+      } : null,
     },
     summary: { total: variations.length, existing: existingCount, toCreate: newCount, duplicates: duplicateCount },
     variations,
@@ -295,7 +315,7 @@ async function previewAutomation({ operation, sku }, deps) {
   };
 }
 
-async function executeAutomation({ operation, sku }, deps, progress = () => {}) {
+async function executeAutomation({ operation, sku, edits = {} }, deps, progress = () => {}) {
   const normalizedSku = text(sku).toUpperCase();
   if (!normalizedSku) throw new Error('Informe o SKU.');
   if (operation === 'criar-kit') return createKit(normalizedSku, deps, progress);
@@ -306,7 +326,7 @@ async function executeAutomation({ operation, sku }, deps, progress = () => {}) 
     return { parentSku: group.parentSku, product: group.items[0].name, created: 0, existing: Boolean(existing), variations: group.items.length, stockUpdated: 0, images: group.items.filter(item => item.image).length, warnings: existing ? [] : ['Produto-pai ainda não existe no Bling.'] };
   }
   const updateContent = operation === 'atualizar-conteudo' || operation === 'sincronizar-tudo';
-  const ensured = await ensureProduct(group, deps, progress, updateContent);
+  const ensured = await ensureProduct(group, deps, progress, updateContent, edits);
   let stock = { updated: 0, warnings: [] };
   if (['atualizar-estoque', 'sincronizar-tudo', 'cadastrar-produto', 'variacoes-ausentes'].includes(operation)) stock = await updateStock(group, ensured.parent.id, deps, progress);
   return { parentSku: group.parentSku, product: group.items[0].name, created: ensured.created, existing: ensured.created === 0, variations: group.items.length, stockUpdated: stock.updated, images: group.items.filter(item => item.image).length, warnings: [...ensured.warnings, ...stock.warnings] };

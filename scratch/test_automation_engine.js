@@ -73,7 +73,26 @@ async function testPreviewDoesNotWrite() {
   assert(!calls.some(call => ['POST', 'PUT', 'DELETE'].includes(call.method)));
 }
 
+async function testApprovedEditsReachBling() {
+  let detailReads = 0;
+  const { calls, deps } = dependencies(async (method, path) => {
+    if (method === 'GET' && path.startsWith('/produtos?codigo=030402879')) return { data: { data: [{ id: 60, codigo: '030402879' }] } };
+    if (method === 'GET' && path === '/produtos/60') {
+      detailReads++;
+      if (detailReads === 1) return { data: { data: { id: 60, codigo: '030402879', nome: 'ANTIGO', preco: 10, categoria: { id: 77 }, tributacao: { ncm: '6107.21.00' }, variacoes: [{ id: 61, codigo: '030402879_ROSA_2', gtin: '7900000000001' }] } } };
+      return { data: { data: { id: 60, variacoes: [{ id: 61, codigo: '030402879_ROSA_2', gtin: '7900000000001' }] } } };
+    }
+    if (method === 'PUT' && path === '/produtos/60') return { data: { data: {} } };
+    if (method === 'POST' && path === '/estoques') return { data: { data: {} } };
+    throw new Error(`Chamada inesperada: ${method} ${path}`);
+  });
+  await executeAutomation({ operation: 'cadastrar-produto', sku: '030402879', edits: { name: 'NOVO NOME', description: 'Nova descricao', price: 129.9, ncm: '6108.31.00', categoryId: 88, ignored: 'nao enviar' } }, deps);
+  const update = calls.find(call => call.method === 'PUT').body;
+  assert.equal(update.nome, 'NOVO NOME'); assert.equal(update.descricaoComplementar, 'Nova descricao'); assert.equal(update.preco, 129.9);
+  assert.equal(update.tributacao.ncm, '6108.31.00'); assert.equal(update.categoria.id, 88); assert.equal(update.ignored, undefined);
+}
+
 (async () => {
-  await testNewProduct(); await testExistingGtinPreservesVariation(); await testDuplicateGtinStopsWrites(); await testMissingVariationInheritsParentFiscalData(); await testPreviewDoesNotWrite();
+  await testNewProduct(); await testExistingGtinPreservesVariation(); await testDuplicateGtinStopsWrites(); await testMissingVariationInheritsParentFiscalData(); await testPreviewDoesNotWrite(); await testApprovedEditsReachBling();
   console.log('Motor de automações: identidade, duplicidade e herança fiscal validadas com sucesso.');
 })().catch(error => { console.error(error); process.exit(1); });

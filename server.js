@@ -1238,6 +1238,13 @@ function handler(req, res) {
     readJsonBody(req).then(body => {
       const operation = String(body.operacao || '').trim();
       const sku = String(body.sku || '').trim().toUpperCase();
+      const rawEdits = body.edits && typeof body.edits === 'object' ? body.edits : {};
+      const edits = {};
+      if (typeof rawEdits.name === 'string' && rawEdits.name.trim()) edits.name = rawEdits.name.trim().slice(0, 180);
+      if (typeof rawEdits.description === 'string') edits.description = rawEdits.description.trim().slice(0, 10000);
+      if (Number.isFinite(Number(rawEdits.price)) && Number(rawEdits.price) >= 0) edits.price = Number(rawEdits.price);
+      if (typeof rawEdits.ncm === 'string' && /^[0-9.]{8,10}$/.test(rawEdits.ncm.trim())) edits.ncm = rawEdits.ncm.trim();
+      if (Number.isInteger(Number(rawEdits.categoryId)) && Number(rawEdits.categoryId) > 0) edits.categoryId = Number(rawEdits.categoryId);
       const allowed = new Set(['cadastrar-produto', 'variacoes-ausentes', 'criar-kit', 'atualizar-estoque', 'atualizar-conteudo', 'verificar-cadastro', 'sincronizar-tudo']);
       if (!allowed.has(operation) || !sku) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1257,7 +1264,7 @@ function handler(req, res) {
           job.updatedAt = new Date().toISOString();
         };
         try {
-          const result = await executeAutomation({ operation, sku }, { consultLinx: consultarProdutoLinxInterno, blingRequest, colors: coresMap }, progress);
+          const result = await executeAutomation({ operation, sku, edits }, { consultLinx: consultarProdutoLinxInterno, blingRequest, colors: coresMap }, progress);
           progress('final', result.warnings?.length ? 'warning' : 'done');
           job.result = result;
           job.status = result.warnings?.length ? 'warning' : 'completed';
