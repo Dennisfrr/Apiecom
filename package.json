@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "start:tunnel": "node tunnel-server.js",
     "agent:whatsapp": "node whatsapp-agent.js",
     "agent:whatsapp:codex": "node whatsapp-agent.js",
     "agent:grupo": "node whatsapp-group-agent.js",
