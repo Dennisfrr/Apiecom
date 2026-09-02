@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { executeAutomation } = require('../automation-engine');
+const { executeAutomation, previewAutomation } = require('../automation-engine');
 
 const linx = { Produtos: [{ Referencia: '030402879', CodigoAuxiliar: '0304028791452', NomeProduto: 'PIJAMA TESTE ROSA 2', PrecoVenda: 99.9, Saldo: 4, Codebars: [{ Principal: true, Codebar: '7900000000001' }] }] };
 function dependencies(handler) {
@@ -62,7 +62,18 @@ async function testMissingVariationInheritsParentFiscalData() {
   assert.equal(created.tributacao.ncm, '6107.21.00'); assert.equal(created.categoria.id, 77); assert.equal(created.marca, 'PUKET'); assert.equal(result.created, 1);
 }
 
+async function testPreviewDoesNotWrite() {
+  const { calls, deps } = dependencies(async (method, path) => {
+    if (method === 'GET' && path.startsWith('/produtos?codigo=030402879')) return { data: { data: [{ id: 50, codigo: '030402879' }] } };
+    if (method === 'GET' && path === '/produtos/50') return { data: { data: { id: 50, codigo: '030402879', nome: 'PIJAMA TESTE', marca: 'PUKET', categoria: { id: 77 }, tributacao: { ncm: '6107.21.00' }, variacoes: [] } } };
+    throw new Error(`Chamada inesperada: ${method} ${path}`);
+  });
+  const preview = await previewAutomation({ operation: 'cadastrar-produto', sku: '030402879' }, deps);
+  assert.equal(preview.canApprove, true); assert.equal(preview.summary.toCreate, 1); assert.equal(preview.product.ncm, '6107.21.00');
+  assert(!calls.some(call => ['POST', 'PUT', 'DELETE'].includes(call.method)));
+}
+
 (async () => {
-  await testNewProduct(); await testExistingGtinPreservesVariation(); await testDuplicateGtinStopsWrites(); await testMissingVariationInheritsParentFiscalData();
+  await testNewProduct(); await testExistingGtinPreservesVariation(); await testDuplicateGtinStopsWrites(); await testMissingVariationInheritsParentFiscalData(); await testPreviewDoesNotWrite();
   console.log('Motor de automações: identidade, duplicidade e herança fiscal validadas com sucesso.');
 })().catch(error => { console.error(error); process.exit(1); });

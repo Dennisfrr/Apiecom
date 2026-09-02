@@ -223,6 +223,78 @@ async function createKit(sku, deps, progress) {
   return { parentSku: sku, product: name, created: 1, existing: false, variations: components.length, stockUpdated: availability > 0 ? 1 : 0, images: images.length, warnings: [] };
 }
 
+async function previewAutomation({ operation, sku }, deps) {
+  const normalizedSku = text(sku).toUpperCase();
+  if (!normalizedSku) throw new Error('Informe o SKU.');
+  if (operation === 'criar-kit') throw new Error('A pré-visualização de kits ainda não está disponível.');
+
+  const group = await loadGroup(normalizedSku, deps, () => {});
+  const parent = await findBlingExact(deps.blingRequest, group.parentSku);
+  let detail = null;
+  let existingVariations = [];
+  if (parent?.id) {
+    const response = await deps.blingRequest('GET', `/produtos/${parent.id}`);
+    detail = response.data?.data || response.data;
+    existingVariations = Array.isArray(detail?.variacoes) ? detail.variacoes : [];
+  }
+
+  const warnings = [];
+  const variations = [];
+  for (const item of group.items) {
+    let match = { variation: null, matchedBy: null };
+    try {
+      match = resolveVariation(item, existingVariations);
+    } catch (error) {
+      variations.push({ ...item, status: 'duplicate', blingSku: '', blingId: null, message: error.message });
+      warnings.push(error.message);
+      continue;
+    }
+    if (!match.variation && !parent && item.barcode) {
+      const elsewhere = await findBlingExact(deps.blingRequest, item.barcode);
+      if (elsewhere) {
+        const message = `O GTIN ${item.barcode} já pertence a ${elsewhere.codigo || elsewhere.id} no Bling.`;
+        variations.push({ ...item, status: 'duplicate', blingSku: text(elsewhere.codigo), blingId: elsewhere.id || null, message });
+        warnings.push(message);
+        continue;
+      }
+    }
+    const preserved = match.variation;
+    variations.push({
+      ...item,
+      status: preserved ? 'existing' : 'new',
+      blingSku: preserved ? text(preserved.codigo) : '',
+      blingId: preserved?.id || null,
+      message: preserved && match.matchedBy === 'gtin' && text(preserved.codigo) !== item.childSku
+        ? `Será preservada como ${preserved.codigo}, identificada pelo GTIN.`
+        : '',
+    });
+  }
+
+  const duplicateCount = variations.filter(item => item.status === 'duplicate').length;
+  const newCount = variations.filter(item => item.status === 'new').length;
+  const existingCount = variations.filter(item => item.status === 'existing').length;
+  const first = group.items[0];
+  return {
+    operation,
+    requestedSku: normalizedSku,
+    parentExists: Boolean(parent),
+    canApprove: duplicateCount === 0,
+    product: {
+      parentSku: group.parentSku,
+      name: first.name,
+      description: first.description,
+      image: first.image,
+      price: first.price,
+      ncm: text(detail?.tributacao?.ncm || first.ncm || DEFAULT_NCM),
+      categoryId: detail?.categoria?.id || DEFAULT_CATEGORY_ID,
+      brand: text(detail?.marca || 'Puket'),
+    },
+    summary: { total: variations.length, existing: existingCount, toCreate: newCount, duplicates: duplicateCount },
+    variations,
+    warnings,
+  };
+}
+
 async function executeAutomation({ operation, sku }, deps, progress = () => {}) {
   const normalizedSku = text(sku).toUpperCase();
   if (!normalizedSku) throw new Error('Informe o SKU.');
@@ -240,4 +312,4 @@ async function executeAutomation({ operation, sku }, deps, progress = () => {}) 
   return { parentSku: group.parentSku, product: group.items[0].name, created: ensured.created, existing: ensured.created === 0, variations: group.items.length, stockUpdated: stock.updated, images: group.items.filter(item => item.image).length, warnings: [...ensured.warnings, ...stock.warnings] };
 }
 
-module.exports = { executeAutomation };
+module.exports = { executeAutomation, previewAutomation };

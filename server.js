@@ -14,7 +14,7 @@ const { OfferFunnelStore } = require('./offer-funnel-store');
 const { BlingEventStore } = require('./bling-event-store');
 const { GroupSalesStore } = require('./group-sales-store');
 const { GroupSalesEngine } = require('./group-sales-engine');
-const { executeAutomation } = require('./automation-engine');
+const { executeAutomation, previewAutomation } = require('./automation-engine');
 
 // Credenciais externas são configuradas no ambiente (localmente pelo .env e,
 // em produção, pelo painel da hospedagem). Nunca coloque chaves neste arquivo.
@@ -1269,6 +1269,26 @@ function handler(req, res) {
       });
       res.writeHead(202, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({ id, status: job.status }));
+    }).catch(error => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message }));
+    });
+    return;
+  }
+
+  if (reqPath === '/api/automacoes/preview' && req.method === 'POST') {
+    readJsonBody(req).then(async body => {
+      const operation = String(body.operacao || '').trim();
+      const sku = String(body.sku || '').trim().toUpperCase();
+      const allowed = new Set(['cadastrar-produto', 'variacoes-ausentes', 'atualizar-estoque', 'atualizar-conteudo', 'verificar-cadastro', 'sincronizar-tudo']);
+      if (!allowed.has(operation) || !sku) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Informe uma operação válida e o SKU.' }));
+        return;
+      }
+      const preview = await previewAutomation({ operation, sku }, { consultLinx: consultarProdutoLinxInterno, blingRequest, colors: coresMap });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(preview));
     }).catch(error => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: error.message }));
