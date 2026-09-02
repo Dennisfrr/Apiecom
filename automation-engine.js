@@ -42,6 +42,7 @@ function normalizeLinxProducts(raw, requestedSku, colors) {
       parentSku, childSku, base, colorName, size, barcode,
       name: text(product.NomeProduto || product.DescricaoProduto || parentSku),
       description: description(product),
+      ncm: text(product.NCM || product.Ncm || product.CodigoNCM || product.ClassificacaoFiscal),
       price: number(product.PrecoVenda),
       stock: number(product.Saldo),
       image: base ? `https://storage.googleapis.com/cdnportalservicos/Files/B2C2/${base}_1.png` : '',
@@ -56,6 +57,7 @@ function normalizeLinxProducts(raw, requestedSku, colors) {
 
 async function findBlingExact(blingRequest, sku) {
   const queries = [`/produtos?codigo=${encodeURIComponent(sku)}&pagina=1&limite=100`, `/produtos?codigos[]=${encodeURIComponent(sku)}&pagina=1&limite=100`];
+  if (/^\d{8,14}$/.test(text(sku))) queries.push(`/produtos?gtins[]=${encodeURIComponent(sku)}&pagina=1&limite=100`);
   for (const query of queries) {
     try {
       const response = await blingRequest('GET', query);
@@ -67,14 +69,41 @@ async function findBlingExact(blingRequest, sku) {
   return null;
 }
 
-function variationPayload(item, fallbackName, fallbackPrice) {
+function inheritedVariationFields(parent) {
+  const fields = {};
+  for (const key of ['categoria', 'fornecedor', 'unidade', 'marca', 'tipoProducao', 'condicao', 'dimensoes']) {
+    if (parent?.[key] !== undefined && parent[key] !== null && parent[key] !== '') fields[key] = parent[key];
+  }
+  if (parent?.tributacao && typeof parent.tributacao === 'object') fields.tributacao = { ...parent.tributacao };
+  return fields;
+}
+
+function variationPayload(item, fallbackName, fallbackPrice, inherited = {}) {
   const variantName = [fallbackName, item.colorName, item.size].filter(Boolean).join(' ');
   const attribute = `${item.colorName ? `Cor:${item.colorName};` : ''}Tamanho:${item.size}`;
+  const tributacao = inherited.tributacao
+    ? { ...inherited.tributacao }
+    : { ncm: item.ncm || DEFAULT_NCM };
   return {
+    ...inherited,
     nome: variantName, codigo: item.childSku, preco: item.price || fallbackPrice, gtin: item.barcode || undefined,
-    situacao: 'A', tipo: 'P', formato: 'S', variacao: { nome: attribute }, tributacao: { ncm: DEFAULT_NCM },
+    situacao: 'A', tipo: 'P', formato: 'S', variacao: { nome: attribute }, tributacao,
     ...(item.image ? { midia: media([item.image]) } : {}),
   };
+}
+
+function resolveVariation(item, variations) {
+  const barcode = text(item.barcode);
+  if (barcode) {
+    const byGtin = variations.filter(value => [value.gtin, value.gtinTributario].some(gtin => text(gtin) === barcode));
+    if (byGtin.length > 1) {
+      const codes = byGtin.map(value => text(value.codigo) || `ID ${value.id}`).join(', ');
+      throw Object.assign(new Error(`O GTIN ${barcode} está duplicado no Bling (${codes}). Revise a duplicidade antes de sincronizar.`), { step: 'comparando' });
+    }
+    if (byGtin.length === 1) return { variation: byGtin[0], matchedBy: 'gtin' };
+  }
+  const byCode = variations.find(value => text(value.codigo).toUpperCase() === text(item.childSku).toUpperCase());
+  return byCode ? { variation: byCode, matchedBy: 'codigo' } : { variation: null, matchedBy: null };
 }
 
 function parentPayload(parentSku, items) {
@@ -111,7 +140,15 @@ async function ensureProduct(group, deps, progress, updateContent = false) {
   const payload = parentPayload(group.parentSku, group.items);
   let created = 0;
   let existingCount = 0;
+  const warnings = [];
   if (!parent) {
+    for (const item of group.items) {
+      if (!item.barcode) continue;
+      const identity = await findBlingExact(deps.blingRequest, item.barcode);
+      if (identity) {
+        throw Object.assign(new Error(`O GTIN ${item.barcode} já pertence ao produto ${identity.codigo || identity.id} no Bling. Nenhum cadastro foi criado.`), { step: 'comparando' });
+      }
+    }
     progress('comparando', 'done'); progress('gravando', 'running');
     const response = await deps.blingRequest('POST', '/produtos', payload);
     parent = response.data?.data || response.data;
@@ -120,18 +157,25 @@ async function ensureProduct(group, deps, progress, updateContent = false) {
     const detailResponse = await deps.blingRequest('GET', `/produtos/${parent.id}`);
     const detail = detailResponse.data?.data || detailResponse.data;
     const existing = Array.isArray(detail?.variacoes) ? detail.variacoes : [];
-    const existingCodes = new Set(existing.map(item => text(item.codigo)));
-    existingCount = group.items.filter(item => existingCodes.has(item.childSku)).length;
-    const missing = payload.variacoes.filter(item => !existingCodes.has(item.codigo));
+    const inherited = inheritedVariationFields(detail);
+    const matches = group.items.map(item => ({ item, ...resolveVariation(item, existing) }));
+    existingCount = matches.filter(match => match.variation).length;
+    matches.filter(match => match.variation && match.matchedBy === 'gtin' && text(match.variation.codigo) !== match.item.childSku)
+      .forEach(match => warnings.push(`O GTIN ${match.item.barcode} já estava cadastrado como ${match.variation.codigo}; a variação foi preservada.`));
+    const price = group.items[0].price || Math.max(...group.items.map(item => item.price), 0);
+    const missing = matches.filter(match => !match.variation)
+      .map(match => variationPayload(match.item, group.items[0].name, price, inherited));
     created = missing.length;
     progress('comparando', 'done'); progress('gravando', 'running');
     if (missing.length || updateContent) {
       const update = { ...detail, ...(updateContent ? payload : {}), codigo: group.parentSku, variacoes: [...existing, ...missing] };
+      if (detail.tributacao) update.tributacao = detail.tributacao;
+      if (detail.categoria) update.categoria = detail.categoria;
       await deps.blingRequest('PUT', `/produtos/${parent.id}`, update);
     }
   }
   progress('gravando', 'done');
-  return { parent, created, existingCount };
+  return { parent, created, existingCount, warnings };
 }
 
 async function updateStock(group, parentId, deps, progress) {
@@ -141,8 +185,9 @@ async function updateStock(group, parentId, deps, progress) {
   const variations = Array.isArray(detail?.variacoes) ? detail.variacoes : [];
   let updated = 0; const warnings = [];
   for (const item of group.items) {
-    const variant = variations.find(value => text(value.codigo) === item.childSku || text(value.gtin) === item.barcode);
+    const { variation: variant, matchedBy } = resolveVariation(item, variations);
     if (!variant?.id) { warnings.push(`Variação ${item.childSku} sem ID no Bling.`); continue; }
+    if (matchedBy === 'gtin' && text(variant.codigo) !== item.childSku) warnings.push(`Estoque associado a ${variant.codigo} pelo GTIN ${item.barcode}.`);
     await deps.blingRequest('POST', '/estoques', { produto: { id: variant.id }, deposito: { id: DEFAULT_DEPOSIT_ID }, operacao: 'B', preco: item.price, quantidade: item.stock, observacoes: 'Sincronização automática Puket Cadastro Inteligente' });
     updated++;
   }
@@ -192,7 +237,7 @@ async function executeAutomation({ operation, sku }, deps, progress = () => {}) 
   const ensured = await ensureProduct(group, deps, progress, updateContent);
   let stock = { updated: 0, warnings: [] };
   if (['atualizar-estoque', 'sincronizar-tudo', 'cadastrar-produto', 'variacoes-ausentes'].includes(operation)) stock = await updateStock(group, ensured.parent.id, deps, progress);
-  return { parentSku: group.parentSku, product: group.items[0].name, created: ensured.created, existing: ensured.created === 0, variations: group.items.length, stockUpdated: stock.updated, images: group.items.filter(item => item.image).length, warnings: stock.warnings };
+  return { parentSku: group.parentSku, product: group.items[0].name, created: ensured.created, existing: ensured.created === 0, variations: group.items.length, stockUpdated: stock.updated, images: group.items.filter(item => item.image).length, warnings: [...ensured.warnings, ...stock.warnings] };
 }
 
 module.exports = { executeAutomation };
