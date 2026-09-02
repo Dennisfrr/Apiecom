@@ -1245,6 +1245,7 @@ function handler(req, res) {
       if (Number.isFinite(Number(rawEdits.price)) && Number(rawEdits.price) >= 0) edits.price = Number(rawEdits.price);
       if (typeof rawEdits.ncm === 'string' && /^[0-9.]{8,10}$/.test(rawEdits.ncm.trim())) edits.ncm = rawEdits.ncm.trim();
       if (Number.isInteger(Number(rawEdits.categoryId)) && Number(rawEdits.categoryId) > 0) edits.categoryId = Number(rawEdits.categoryId);
+      if (Array.isArray(rawEdits.images)) edits.images = [...new Set(rawEdits.images.map(value => String(value || '').trim()).filter(value => /^https?:\/\//i.test(value)))].slice(0, 20);
       const allowed = new Set(['cadastrar-produto', 'variacoes-ausentes', 'criar-kit', 'atualizar-estoque', 'atualizar-conteudo', 'verificar-cadastro', 'sincronizar-tudo']);
       if (!allowed.has(operation) || !sku) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1295,7 +1296,7 @@ function handler(req, res) {
         res.end(JSON.stringify({ error: 'Informe uma operação válida e o SKU.' }));
         return;
       }
-      const preview = await previewAutomation({ operation, sku }, { consultLinx: consultarProdutoLinxInterno, blingRequest, colors: coresMap });
+      const preview = await previewAutomation({ operation, sku }, { consultLinx: consultarProdutoLinxInterno, blingRequest, catalogSearch: catalogoBuscar, colors: coresMap });
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(preview));
     }).catch(error => {

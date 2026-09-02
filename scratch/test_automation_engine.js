@@ -65,11 +65,14 @@ async function testMissingVariationInheritsParentFiscalData() {
 async function testPreviewDoesNotWrite() {
   const { calls, deps } = dependencies(async (method, path) => {
     if (method === 'GET' && path.startsWith('/produtos?codigo=030402879')) return { data: { data: [{ id: 50, codigo: '030402879' }] } };
-    if (method === 'GET' && path === '/produtos/50') return { data: { data: { id: 50, codigo: '030402879', nome: 'PIJAMA TESTE', marca: 'PUKET', categoria: { id: 77 }, tributacao: { ncm: '6107.21.00' }, variacoes: [] } } };
+    if (method === 'GET' && path === '/produtos/50') return { data: { data: { id: 50, codigo: '030402879', nome: 'PIJAMA TESTE', marca: 'PUKET', categoria: { id: 77 }, tributacao: { ncm: '6107.21.00' }, midia: { imagens: { externas: [{ link: 'https://img.test/bling.png' }] } }, variacoes: [] } } };
     throw new Error(`Chamada inesperada: ${method} ${path}`);
   });
+  deps.catalogSearch = async () => [{ imagens: ['https://img.test/catalogo-1.png', { link: 'https://img.test/catalogo-2.png' }] }];
   const preview = await previewAutomation({ operation: 'cadastrar-produto', sku: '030402879' }, deps);
   assert.equal(preview.canApprove, true); assert.equal(preview.summary.toCreate, 1); assert.equal(preview.product.ncm, '6107.21.00');
+  assert.deepEqual(preview.product.images.slice(0, 2), ['https://img.test/catalogo-1.png', 'https://img.test/catalogo-2.png']);
+  assert(preview.product.images.includes('https://img.test/bling.png'));
   assert(!calls.some(call => ['POST', 'PUT', 'DELETE'].includes(call.method)));
 }
 
@@ -86,10 +89,11 @@ async function testApprovedEditsReachBling() {
     if (method === 'POST' && path === '/estoques') return { data: { data: {} } };
     throw new Error(`Chamada inesperada: ${method} ${path}`);
   });
-  await executeAutomation({ operation: 'cadastrar-produto', sku: '030402879', edits: { name: 'NOVO NOME', description: 'Nova descricao', price: 129.9, ncm: '6108.31.00', categoryId: 88, ignored: 'nao enviar' } }, deps);
+  await executeAutomation({ operation: 'cadastrar-produto', sku: '030402879', edits: { name: 'NOVO NOME', description: 'Nova descricao', price: 129.9, ncm: '6108.31.00', categoryId: 88, images: ['https://img.test/principal.png', 'https://img.test/segunda.png'], ignored: 'nao enviar' } }, deps);
   const update = calls.find(call => call.method === 'PUT').body;
   assert.equal(update.nome, 'NOVO NOME'); assert.equal(update.descricaoComplementar, 'Nova descricao'); assert.equal(update.preco, 129.9);
   assert.equal(update.tributacao.ncm, '6108.31.00'); assert.equal(update.categoria.id, 88); assert.equal(update.ignored, undefined);
+  assert.deepEqual(update.midia.imagens.imagensURL.map(item => item.link), ['https://img.test/principal.png', 'https://img.test/segunda.png']);
 }
 
 (async () => {

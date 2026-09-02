@@ -16,6 +16,31 @@ function media(urls) {
   const imagensURL = [...new Set(urls)].filter(url => /^https?:\/\//i.test(url)).map(link => ({ link }));
   return imagensURL.length ? { imagens: { imagensURL } } : undefined;
 }
+function imageUrls(value) {
+  const values = Array.isArray(value) ? value : [];
+  return values.map(item => text(typeof item === 'string' ? item : item?.link || item?.url || item?.imagemURL || item?.src)).filter(url => /^https?:\/\//i.test(url));
+}
+function blingImages(product) {
+  return [...new Set([
+    text(product?.imagemURL),
+    ...imageUrls(product?.midia?.imagens?.externas),
+    ...imageUrls(product?.midia?.imagens?.internas),
+    ...imageUrls(product?.midia?.imagens?.imagensURL),
+  ].filter(Boolean))];
+}
+async function catalogImages(group, requestedSku, deps) {
+  if (typeof deps.catalogSearch !== 'function') return [];
+  const queries = [...new Set([requestedSku, group.parentSku, ...group.items.map(item => item.barcode)].filter(Boolean))];
+  const found = [];
+  for (const query of queries.slice(0, 3)) {
+    try {
+      const products = await deps.catalogSearch(query);
+      for (const product of Array.isArray(products) ? products : []) found.push(...imageUrls(product?.imagens));
+      if (found.length) break;
+    } catch (_) { /* catálogo é uma fonte complementar */ }
+  }
+  return [...new Set(found)];
+}
 function productSpecs(name) {
   const value = text(name).toLowerCase();
   if (value.includes('pijama') || value.startsWith('pj')) return { pesoLiquido: .3, pesoBruto: .3, dimensoes: { largura: 30, altura: 20, profundidade: 20, unidadeMedida: 1 } };
@@ -129,6 +154,7 @@ function applyProductEdits(payload, edits = {}) {
   if (typeof edits.description === 'string') updated.descricaoComplementar = edits.description.trim().slice(0, 10000);
   if (text(edits.ncm)) updated.tributacao = { ...(updated.tributacao || {}), ncm: text(edits.ncm) };
   if (Number.isInteger(Number(edits.categoryId)) && Number(edits.categoryId) > 0) updated.categoria = { id: Number(edits.categoryId) };
+  if (Array.isArray(edits.images) && edits.images.length) updated.midia = media(edits.images.slice(0, 20));
   return updated;
 }
 
@@ -286,6 +312,8 @@ async function previewAutomation({ operation, sku }, deps) {
   const newCount = variations.filter(item => item.status === 'new').length;
   const existingCount = variations.filter(item => item.status === 'existing').length;
   const first = group.items[0];
+  const generatedImages = group.items.map(item => item.image).filter(Boolean);
+  const images = [...new Set([...(await catalogImages(group, normalizedSku, deps)), ...generatedImages, ...blingImages(detail)])];
   return {
     operation,
     requestedSku: normalizedSku,
@@ -296,6 +324,7 @@ async function previewAutomation({ operation, sku }, deps) {
       name: first.name,
       description: first.description,
       image: first.image,
+      images,
       price: first.price,
       ncm: text(detail?.tributacao?.ncm || first.ncm || DEFAULT_NCM),
       categoryId: detail?.categoria?.id || DEFAULT_CATEGORY_ID,
@@ -306,7 +335,8 @@ async function previewAutomation({ operation, sku }, deps) {
         price: number(detail.preco),
         ncm: text(detail.tributacao?.ncm),
         categoryId: detail.categoria?.id || null,
-        image: text(detail.imagemURL || detail.midia?.imagens?.externas?.[0]?.link || detail.midia?.imagens?.internas?.[0]?.link),
+        image: blingImages(detail)[0] || '',
+        images: blingImages(detail),
       } : null,
     },
     summary: { total: variations.length, existing: existingCount, toCreate: newCount, duplicates: duplicateCount },
