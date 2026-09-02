@@ -15,7 +15,6 @@
     "test:automacoes": "node scratch/test_automation_engine.js"
   },
   "dependencies": {
-    "@wppconnect-team/wppconnect": "^1.31.1",
     "dotenv": "^16.6.1",
     "selfsigned": "^2.4.1",
     "socket.io": "^4.8.3"
