@@ -72,6 +72,22 @@ function productSpecs(name) {
   if (value.includes('mochila')) return { pesoLiquido: 1, pesoBruto: 1.1, dimensoes: { largura: 32, altura: 43, profundidade: 18, unidadeMedida: 1 } };
   return { pesoLiquido: .2, pesoBruto: .25, dimensoes: { largura: 18, altura: 25, profundidade: 5, unidadeMedida: 1 } };
 }
+function measurementsFromDescription(value) {
+  const source = text(value);
+  const dimension = labels => {
+    const match = source.match(new RegExp(`(?:${labels})\\s*(?:do produto)?\\s*[:=-]?\\s*(\\d+(?:[.,]\\d+)?)\\s*(mm|cm|m)(?![a-z])`, 'i'));
+    if (!match) return 0;
+    const amount = priceNumber(match[1]);
+    return match[2].toLowerCase() === 'mm' ? amount / 10 : match[2].toLowerCase() === 'm' ? amount * 100 : amount;
+  };
+  const weight = labels => {
+    const match = source.match(new RegExp(`(?:${labels})\\s*[:=-]?\\s*(\\d+(?:[.,]\\d+)?)\\s*(kg|g)(?![a-z])`, 'i'));
+    if (!match) return 0;
+    const amount = priceNumber(match[1]);
+    return match[2].toLowerCase() === 'g' ? amount / 1000 : amount;
+  };
+  return { width: dimension('largura'), height: dimension('altura'), depth: dimension('comprimento|profundidade'), netWeight: weight('peso\\s*l[ií]quido'), grossWeight: weight('peso\\s*bruto') };
+}
 
 function normalizeLinxProducts(raw, requestedSku, colors) {
   const products = Array.isArray(raw?.Produtos) ? raw.Produtos : Array.isArray(raw) ? raw : [];
@@ -179,6 +195,9 @@ function applyProductEdits(payload, edits = {}) {
   if (text(edits.ncm)) updated.tributacao = { ...(updated.tributacao || {}), ncm: text(edits.ncm) };
   if (Number.isInteger(Number(edits.categoryId)) && Number(edits.categoryId) > 0) updated.categoria = { id: Number(edits.categoryId) };
   if (Array.isArray(edits.images) && edits.images.length) updated.midia = media(edits.images.slice(0, 20));
+  if (edits.dimensions && typeof edits.dimensions === 'object') updated.dimensoes = { largura: number(edits.dimensions.width), altura: number(edits.dimensions.height), profundidade: number(edits.dimensions.depth), unidadeMedida: 1 };
+  if (Number(edits.netWeight) > 0) updated.pesoLiquido = Number(edits.netWeight);
+  if (Number(edits.grossWeight) > 0) updated.pesoBruto = Number(edits.grossWeight);
   return updated;
 }
 
@@ -341,6 +360,16 @@ async function previewAutomation({ operation, sku }, deps) {
   const images = [...new Set([...catalog.images, ...generatedImages, ...blingImages(detail)])];
   const composedDescription = composeDescriptions(catalog.description, first.description);
   const suggestedPrice = catalog.originalPrice > 0 ? catalog.originalPrice : first.price;
+  const detected = measurementsFromDescription(composedDescription);
+  const fallbackSpecs = productSpecs(first.name);
+  const dimensions = {
+    width: detected.width || number(detail?.dimensoes?.largura) || fallbackSpecs.dimensoes.largura,
+    height: detected.height || number(detail?.dimensoes?.altura) || fallbackSpecs.dimensoes.altura,
+    depth: detected.depth || number(detail?.dimensoes?.profundidade) || fallbackSpecs.dimensoes.profundidade,
+    netWeight: detected.netWeight || number(detail?.pesoLiquido) || fallbackSpecs.pesoLiquido,
+    grossWeight: detected.grossWeight || number(detail?.pesoBruto) || fallbackSpecs.pesoBruto,
+    detected: Boolean(detected.width || detected.height || detected.depth || detected.netWeight || detected.grossWeight),
+  };
   return {
     operation,
     requestedSku: normalizedSku,
@@ -357,6 +386,7 @@ async function previewAutomation({ operation, sku }, deps) {
       price: suggestedPrice,
       catalogPrice: catalog.originalPrice,
       linxPrice: first.price,
+      dimensions,
       ncm: text(detail?.tributacao?.ncm || first.ncm || DEFAULT_NCM),
       categoryId: detail?.categoria?.id || DEFAULT_CATEGORY_ID,
       brand: text(detail?.marca || 'Puket'),

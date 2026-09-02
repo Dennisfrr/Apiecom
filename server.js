@@ -1246,6 +1246,13 @@ function handler(req, res) {
       if (typeof rawEdits.ncm === 'string' && /^[0-9.]{8,10}$/.test(rawEdits.ncm.trim())) edits.ncm = rawEdits.ncm.trim();
       if (Number.isInteger(Number(rawEdits.categoryId)) && Number(rawEdits.categoryId) > 0) edits.categoryId = Number(rawEdits.categoryId);
       if (Array.isArray(rawEdits.images)) edits.images = [...new Set(rawEdits.images.map(value => String(value || '').trim()).filter(value => /^https?:\/\//i.test(value)))].slice(0, 20);
+      if (rawEdits.dimensions && typeof rawEdits.dimensions === 'object') {
+        const dimensions = {};
+        for (const key of ['width', 'height', 'depth']) if (Number.isFinite(Number(rawEdits.dimensions[key])) && Number(rawEdits.dimensions[key]) >= 0) dimensions[key] = Number(rawEdits.dimensions[key]);
+        edits.dimensions = dimensions;
+      }
+      if (Number.isFinite(Number(rawEdits.netWeight)) && Number(rawEdits.netWeight) >= 0) edits.netWeight = Number(rawEdits.netWeight);
+      if (Number.isFinite(Number(rawEdits.grossWeight)) && Number(rawEdits.grossWeight) >= 0) edits.grossWeight = Number(rawEdits.grossWeight);
       const allowed = new Set(['cadastrar-produto', 'variacoes-ausentes', 'criar-kit', 'atualizar-estoque', 'atualizar-conteudo', 'verificar-cadastro', 'sincronizar-tudo']);
       if (!allowed.has(operation) || !sku) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
