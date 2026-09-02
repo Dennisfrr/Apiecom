@@ -68,13 +68,14 @@ async function testPreviewDoesNotWrite() {
     if (method === 'GET' && path === '/produtos/50') return { data: { data: { id: 50, codigo: '030402879', nome: 'PIJAMA TESTE', marca: 'PUKET', categoria: { id: 77 }, tributacao: { ncm: '6107.21.00' }, midia: { imagens: { externas: [{ link: 'https://img.test/bling.png' }] } }, variacoes: [] } } };
     throw new Error(`Chamada inesperada: ${method} ${path}`);
   });
-  deps.catalogSearch = async () => [{ descricao: 'Descrição detalhada do catálogo.', imagens: ['https://img.test/catalogo-1.png', { link: 'https://img.test/catalogo-2.png' }] }];
+  deps.catalogSearch = async () => [{ descricao: 'Descrição detalhada do catálogo.', preco: 89.9, precoOriginal: 'R$ 149,90', imagens: ['https://img.test/catalogo-1.png', { link: 'https://img.test/catalogo-2.png' }] }];
   const preview = await previewAutomation({ operation: 'cadastrar-produto', sku: '030402879' }, deps);
   assert.equal(preview.canApprove, true); assert.equal(preview.summary.toCreate, 1); assert.equal(preview.product.ncm, '6107.21.00');
   assert.deepEqual(preview.product.images.slice(0, 2), ['https://img.test/catalogo-1.png', 'https://img.test/catalogo-2.png']);
   assert(preview.product.images.includes('https://img.test/bling.png'));
   assert.equal(preview.product.description, 'Descrição detalhada do catálogo.');
   assert.equal(preview.product.catalogDescription, 'Descrição detalhada do catálogo.');
+  assert.equal(preview.product.price, 149.9); assert.equal(preview.product.catalogPrice, 149.9); assert.equal(preview.product.linxPrice, 99.9);
   assert(!calls.some(call => ['POST', 'PUT', 'DELETE'].includes(call.method)));
 }
 

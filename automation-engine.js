@@ -4,6 +4,13 @@ const DEFAULT_NCM = String(process.env.BLING_DEFAULT_NCM || '6108.31.00');
 
 function text(value) { return String(value ?? '').trim(); }
 function number(value) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : 0; }
+function priceNumber(value) {
+  if (typeof value === 'string') {
+    const normalized = value.replace(/R\$/gi, '').replace(/\s/g, '').replace(/\.(?=\d{3}(?:\D|$))/g, '').replace(',', '.');
+    return number(normalized);
+  }
+  return number(value);
+}
 function pickBarcode(product) {
   const codes = Array.isArray(product.Codebars) ? product.Codebars : [];
   return text(codes.find(item => item?.Principal)?.Codebar || codes[0]?.Codebar || product.Codebar);
@@ -40,21 +47,23 @@ function composeDescriptions(catalogDescription, linxDescription) {
   return `${catalog}\n\n${linx}`.slice(0, 10000);
 }
 async function catalogContent(group, requestedSku, deps) {
-  if (typeof deps.catalogSearch !== 'function') return { images: [], description: '' };
+  if (typeof deps.catalogSearch !== 'function') return { images: [], description: '', originalPrice: 0 };
   const queries = [...new Set([requestedSku, group.parentSku, group.items[0]?.name, ...group.items.map(item => item.barcode)].filter(Boolean))];
   const found = [];
   let description = '';
+  let originalPrice = 0;
   for (const query of queries.slice(0, 3)) {
     try {
       const products = await deps.catalogSearch(query);
       for (const product of Array.isArray(products) ? products : []) {
         found.push(...imageUrls(product?.imagens));
         if (!description) description = text(product?.descricao);
+        if (!originalPrice) originalPrice = priceNumber(product?.precoOriginal || product?.preco);
       }
       if (found.length || description) break;
     } catch (_) { /* catálogo é uma fonte complementar */ }
   }
-  return { images: [...new Set(found)], description };
+  return { images: [...new Set(found)], description, originalPrice };
 }
 function productSpecs(name) {
   const value = text(name).toLowerCase();
@@ -331,6 +340,7 @@ async function previewAutomation({ operation, sku }, deps) {
   const generatedImages = group.items.map(item => item.image).filter(Boolean);
   const images = [...new Set([...catalog.images, ...generatedImages, ...blingImages(detail)])];
   const composedDescription = composeDescriptions(catalog.description, first.description);
+  const suggestedPrice = catalog.originalPrice > 0 ? catalog.originalPrice : first.price;
   return {
     operation,
     requestedSku: normalizedSku,
@@ -344,7 +354,9 @@ async function previewAutomation({ operation, sku }, deps) {
       linxDescription: first.description,
       image: first.image,
       images,
-      price: first.price,
+      price: suggestedPrice,
+      catalogPrice: catalog.originalPrice,
+      linxPrice: first.price,
       ncm: text(detail?.tributacao?.ncm || first.ncm || DEFAULT_NCM),
       categoryId: detail?.categoria?.id || DEFAULT_CATEGORY_ID,
       brand: text(detail?.marca || 'Puket'),
