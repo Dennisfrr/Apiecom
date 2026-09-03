@@ -326,7 +326,8 @@ async function createKit(sku, deps, progress, edits = {}) {
   const name = `KIT - ${components.map(item => item.local.name).join(' + ')}`.slice(0, 180);
   const images = components.map(item => item.local.image).filter(Boolean);
   const availability = Math.max(0, Math.floor(Math.min(...components.map(item => item.local.stock))));
-  const body = applyProductEdits({ nome: name, codigo: sku, preco: components.reduce((sum, item) => sum + item.local.price, 0), tipo: 'P', situacao: 'A', formato: 'E', marca: 'Puket', categoria: { id: DEFAULT_CATEGORY_ID }, tributacao: { ncm: DEFAULT_NCM }, ...(images.length ? { midia: media(images) } : {}) }, edits);
+  const structureBody = { tipoEstoque: 'V', lancamentoEstoque: 'M', componentes: expectedComponents };
+  const body = applyProductEdits({ nome: name, codigo: sku, preco: components.reduce((sum, item) => sum + item.local.price, 0), tipo: 'P', situacao: 'A', formato: 'E', tipoEstoque: 'V', estrutura: structureBody, marca: 'Puket', categoria: { id: DEFAULT_CATEGORY_ID }, tributacao: { ncm: DEFAULT_NCM }, ...(images.length ? { midia: media(images) } : {}) }, edits);
   let kit = existing;
   if (kit?.id) {
     const detailResponse = await deps.blingRequest('GET', `/produtos/${kit.id}`);
@@ -337,7 +338,6 @@ async function createKit(sku, deps, progress, edits = {}) {
     kit = response.data?.data || response.data;
   }
   if (!kit?.id) throw Object.assign(new Error('O Bling não retornou o ID do produto do kit.'), { step: 'gravando' });
-  const structureBody = { tipoEstoque: 'V', lancamentoEstoque: 'M', componentes: expectedComponents };
   if (!structureAlreadyValid) {
     await deps.blingRequest('PUT', `/produtos/estruturas/${kit.id}`, structureBody);
     const verificationResponse = await deps.blingRequest('GET', `/produtos/estruturas/${kit.id}`);
