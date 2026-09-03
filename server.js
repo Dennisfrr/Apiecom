@@ -1297,7 +1297,7 @@ function handler(req, res) {
     readJsonBody(req).then(async body => {
       const operation = String(body.operacao || '').trim();
       const sku = String(body.sku || '').trim().toUpperCase();
-      const allowed = new Set(['cadastrar-produto', 'variacoes-ausentes', 'atualizar-estoque', 'atualizar-conteudo', 'verificar-cadastro', 'sincronizar-tudo']);
+      const allowed = new Set(['cadastrar-produto', 'variacoes-ausentes', 'criar-kit', 'atualizar-estoque', 'atualizar-conteudo', 'verificar-cadastro', 'sincronizar-tudo']);
       if (!allowed.has(operation) || !sku) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Informe uma operação válida e o SKU.' }));
