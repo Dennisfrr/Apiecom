@@ -319,10 +319,30 @@ async function createKit(sku, deps, progress) {
   return { parentSku: sku, product: name, created: 1, createdComponents, existing: false, variations: components.length, stockUpdated: componentStocksUpdated + (availability > 0 ? 1 : 0), images: images.length, warnings: componentWarnings };
 }
 
+async function previewKit(sku, deps) {
+  const componentSkus = text(sku).split('_').filter(Boolean);
+  if (componentSkus.length < 2) throw Object.assign(new Error('Informe pelo menos dois SKUs separados por underline.'), { step: 'produto' });
+  const existingKit = await findBlingExact(deps.blingRequest, sku);
+  const components = [];
+  const warnings = [];
+  for (const componentSku of componentSkus) {
+    const group = await loadGroup(componentSku, deps, () => {});
+    const local = group.items.find(item => item.base === componentSku || item.childSku === componentSku || item.barcode === componentSku) || group.items[0];
+    let found = await findBlingExact(deps.blingRequest, local.childSku) || await findBlingExact(deps.blingRequest, componentSku);
+    let status = found ? 'existing' : 'missing';
+    if (!found && local.barcode) {
+      const elsewhere = await findBlingExact(deps.blingRequest, local.barcode);
+      if (elsewhere) { found = elsewhere; status = 'duplicate'; warnings.push(`O GTIN ${local.barcode} já pertence a ${elsewhere.codigo || elsewhere.id}.`); }
+    }
+    components.push({ requestedSku: componentSku, parentSku: group.parentSku, childSku: local.childSku, barcode: local.barcode, name: local.name, image: local.image, price: local.price, stock: local.stock, status, blingId: found?.id || null, blingSku: text(found?.codigo) });
+  }
+  return { kind: 'kit', operation: 'criar-kit', requestedSku: sku, canApprove: !warnings.length, kit: { sku, exists: Boolean(existingKit), name: `KIT - ${components.map(item => item.name).join(' + ')}`.slice(0, 180), price: components.reduce((sum, item) => sum + item.price, 0), availability: Math.max(0, Math.floor(Math.min(...components.map(item => item.stock)))) }, components, warnings };
+}
+
 async function previewAutomation({ operation, sku }, deps) {
   const normalizedSku = text(sku).toUpperCase();
   if (!normalizedSku) throw new Error('Informe o SKU.');
-  if (operation === 'criar-kit') throw new Error('A pré-visualização de kits ainda não está disponível.');
+  if (operation === 'criar-kit') return previewKit(normalizedSku, deps);
 
   const group = await loadGroup(normalizedSku, deps, () => {});
   const parent = await findBlingExact(deps.blingRequest, group.parentSku);
@@ -386,6 +406,7 @@ async function previewAutomation({ operation, sku }, deps) {
     detected: Boolean(detected.width || detected.height || detected.depth || detected.netWeight || detected.grossWeight),
   };
   return {
+    kind: 'product',
     operation,
     requestedSku: normalizedSku,
     parentExists: Boolean(parent),

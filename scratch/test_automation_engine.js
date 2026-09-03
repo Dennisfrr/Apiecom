@@ -124,7 +124,15 @@ async function testKitCreatesMissingComponentsFirst() {
   assert.equal(result.createdComponents, 2); assert.equal(result.created, 1);
 }
 
+async function testKitPreviewDoesNotWrite() {
+  const calls = [];
+  const deps = { colors: { '001': 'AZUL' }, consultLinx: async sku => ({ Produtos: [{ Referencia: sku, CodigoAuxiliar: `${sku}001UN`, NomeProduto: `PRODUTO ${sku}`, PrecoVenda: 50, Saldo: 3, Codebars: [{ Principal: true, Codebar: `789${sku}` }] }] }), blingRequest: async (method, path) => { calls.push({ method, path }); return { data: { data: [] } }; } };
+  const preview = await previewAutomation({ operation: 'criar-kit', sku: '111111111_222222222' }, deps);
+  assert.equal(preview.kind, 'kit'); assert.equal(preview.components.length, 2); assert(preview.components.every(item => item.status === 'missing')); assert.equal(preview.canApprove, true);
+  assert(!calls.some(call => ['POST', 'PUT', 'DELETE'].includes(call.method)));
+}
+
 (async () => {
-  await testNewProduct(); await testExistingGtinPreservesVariation(); await testDuplicateGtinStopsWrites(); await testMissingVariationInheritsParentFiscalData(); await testPreviewDoesNotWrite(); await testApprovedEditsReachBling(); await testKitCreatesMissingComponentsFirst();
+  await testNewProduct(); await testExistingGtinPreservesVariation(); await testDuplicateGtinStopsWrites(); await testMissingVariationInheritsParentFiscalData(); await testPreviewDoesNotWrite(); await testApprovedEditsReachBling(); await testKitCreatesMissingComponentsFirst(); await testKitPreviewDoesNotWrite();
   console.log('Motor de automações: identidade, duplicidade e herança fiscal validadas com sucesso.');
 })().catch(error => { console.error(error); process.exit(1); });
