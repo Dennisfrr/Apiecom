@@ -105,6 +105,7 @@ async function testKitCreatesMissingComponentsFirst() {
   const deps = {
     colors: { '001': 'AZUL' },
     consultLinx: async sku => ({ Produtos: [{ Referencia: sku, CodigoAuxiliar: `${sku}001UN`, NomeProduto: `PRODUTO ${sku}`, PrecoVenda: 50, Saldo: 3, Codebars: [{ Principal: true, Codebar: `789${sku}` }] }] }),
+    catalogSearch: async sku => [{ descricao: `DESCRICAO CATALOGO ${sku}`, precoOriginal: 79.9, imagens: [`https://img.test/${sku}-1.png`, `https://img.test/${sku}-2.png`] }],
     blingRequest: async (method, path, body) => {
       calls.push({ method, path, body });
       if (method === 'GET' && path.startsWith('/produtos?')) return { data: { data: [] } };
@@ -122,7 +123,12 @@ async function testKitCreatesMissingComponentsFirst() {
   };
   const result = await executeAutomation({ operation: 'criar-kit', sku: '111111111_222222222' }, deps);
   const kit = calls.find(call => call.method === 'POST' && call.path === '/produtos' && call.body.formato === 'E');
+  const createdProducts = calls.filter(call => call.method === 'POST' && call.path === '/produtos' && call.body.formato === 'V');
   const structure = calls.find(call => call.method === 'PUT' && call.path === '/produtos/estruturas/303');
+  assert.equal(createdProducts.length, 2);
+  assert(createdProducts.every(call => call.body.descricaoComplementar.startsWith('DESCRICAO CATALOGO')));
+  assert(createdProducts.every(call => call.body.preco === 79.9 && call.body.tributacao.ncm && call.body.dimensoes && call.body.pesoLiquido));
+  assert(createdProducts.every(call => call.body.midia.imagens.imagensURL.length >= 2));
   assert.deepEqual(structure.body.componentes.map(item => item.produto.id), [111, 222]);
   assert.equal(result.createdComponents, 2); assert.equal(result.created, 1);
   assert(calls.some(call => call.method === 'PUT' && call.path === '/produtos/estruturas/303'));

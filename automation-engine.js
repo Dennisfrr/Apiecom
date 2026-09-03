@@ -212,6 +212,29 @@ async function loadGroup(sku, deps, progress) {
   return { parentSku, items };
 }
 
+async function automaticProductEdits(group, requestedSku, deps) {
+  const first = group.items[0];
+  const catalog = await catalogContent(group, requestedSku, deps);
+  const descriptionValue = composeDescriptions(catalog.description, first.description);
+  const detected = measurementsFromDescription(descriptionValue);
+  const fallback = productSpecs(first.name);
+  return {
+    name: first.name,
+    description: descriptionValue,
+    price: catalog.originalPrice > 0 ? catalog.originalPrice : first.price,
+    images: [...new Set([...catalog.images, ...group.items.map(item => item.image).filter(Boolean)])],
+    ncm: first.ncm || DEFAULT_NCM,
+    categoryId: DEFAULT_CATEGORY_ID,
+    dimensions: {
+      width: detected.width || fallback.dimensoes.largura,
+      height: detected.height || fallback.dimensoes.altura,
+      depth: detected.depth || fallback.dimensoes.profundidade,
+    },
+    netWeight: detected.netWeight || fallback.pesoLiquido,
+    grossWeight: detected.grossWeight || fallback.pesoBruto,
+  };
+}
+
 async function ensureProduct(group, deps, progress, updateContent = false, edits = {}) {
   progress('bling', 'running');
   let parent = await findBlingExact(deps.blingRequest, group.parentSku);
@@ -290,7 +313,8 @@ async function createKit(sku, deps, progress, edits = {}) {
     const local = group.items.find(item => item.base === componentSku || item.childSku === componentSku || item.barcode === componentSku) || group.items[0];
     let found = await findBlingExact(deps.blingRequest, local.childSku) || await findBlingExact(deps.blingRequest, componentSku);
     if (!found) {
-      const ensured = await ensureProduct(group, deps, () => {});
+      const automaticEdits = await automaticProductEdits(group, componentSku, deps);
+      const ensured = await ensureProduct(group, deps, () => {}, true, automaticEdits);
       createdComponents += ensured.created > 0 ? 1 : 0;
       componentWarnings.push(...ensured.warnings);
       if (!ensured.parent?.id) throw Object.assign(new Error(`O produto-base do componente ${componentSku} foi criado sem identificação no Bling.`), { step: 'bling' });
