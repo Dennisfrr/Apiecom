@@ -114,14 +114,18 @@ async function testKitCreatesMissingComponentsFirst() {
         return { data: { data: { id: entry.parent, variacoes: [{ id: entry.variation, codigo: path.includes('101') ? '111111111_AZUL_UN' : '222222222_AZUL_UN', gtin: path.includes('101') ? '789111111111' : '789222222222' }] } } };
       }
       if (method === 'POST' && path === '/estoques') return { data: { data: {} } };
-      if (method === 'POST' && path === '/produtos' && body.formato === 'S') return { data: { data: { id: 303 } } };
+      if (method === 'POST' && path === '/produtos' && body.formato === 'E') return { data: { data: { id: 303 } } };
+      if (method === 'PUT' && path === '/produtos/estruturas/303') return { data: null };
+      if (method === 'GET' && path === '/produtos/estruturas/303') return { data: { data: { tipoEstoque: 'V', lancamentoEstoque: 'M', componentes: [{ produto: { id: 111 }, quantidade: 1 }, { produto: { id: 222 }, quantidade: 1 }] } } };
       throw new Error(`Chamada inesperada: ${method} ${path}`);
     },
   };
   const result = await executeAutomation({ operation: 'criar-kit', sku: '111111111_222222222' }, deps);
-  const kit = calls.find(call => call.method === 'POST' && call.path === '/produtos' && call.body.formato === 'S');
-  assert.deepEqual(kit.body.estrutura.componentes.map(item => item.produto.id), [111, 222]);
+  const kit = calls.find(call => call.method === 'POST' && call.path === '/produtos' && call.body.formato === 'E');
+  const structure = calls.find(call => call.method === 'PUT' && call.path === '/produtos/estruturas/303');
+  assert.deepEqual(structure.body.componentes.map(item => item.produto.id), [111, 222]);
   assert.equal(result.createdComponents, 2); assert.equal(result.created, 1);
+  assert(calls.some(call => call.method === 'PUT' && call.path === '/produtos/estruturas/303'));
 }
 
 async function testKitPreviewDoesNotWrite() {
@@ -132,7 +136,28 @@ async function testKitPreviewDoesNotWrite() {
   assert(!calls.some(call => ['POST', 'PUT', 'DELETE'].includes(call.method)));
 }
 
+async function testExistingSimpleProductBecomesKitWithoutDuplicate() {
+  const calls = [];
+  let structureReads = 0;
+  const deps = { colors: { '001': 'AZUL' }, consultLinx: async sku => ({ Produtos: [{ Referencia: sku, CodigoAuxiliar: `${sku}001UN`, NomeProduto: `PRODUTO ${sku}`, PrecoVenda: 50, Saldo: 3, Codebars: [{ Principal: true, Codebar: `789${sku}` }] }] }), blingRequest: async (method, path, body) => {
+    calls.push({ method, path, body });
+    if (method === 'GET' && path.includes('codigo=111111111_222222222')) return { data: { data: [{ id: 303, codigo: '111111111_222222222', nome: 'KIT EXISTENTE' }] } };
+    if (method === 'GET' && path.includes('codigo=111111111_AZUL_UN')) return { data: { data: [{ id: 111, codigo: '111111111_AZUL_UN' }] } };
+    if (method === 'GET' && path.includes('codigo=222222222_AZUL_UN')) return { data: { data: [{ id: 222, codigo: '222222222_AZUL_UN' }] } };
+    if (method === 'GET' && path.startsWith('/produtos?')) return { data: { data: [] } };
+    if (method === 'GET' && path === '/produtos/estruturas/303') { structureReads++; if (structureReads === 1) throw new Error('{"status":404}'); return { data: { data: { componentes: [{ produto: { id: 111 }, quantidade: 1 }, { produto: { id: 222 }, quantidade: 1 }] } } }; }
+    if (method === 'GET' && path === '/produtos/303') return { data: { data: { id: 303, codigo: '111111111_222222222', formato: 'S' } } };
+    if (method === 'PUT' && path === '/produtos/303') { assert.equal(body.formato, 'E'); return { data: null }; }
+    if (method === 'PUT' && path === '/produtos/estruturas/303') return { data: null };
+    throw new Error(`Chamada inesperada: ${method} ${path}`);
+  } };
+  const result = await executeAutomation({ operation: 'criar-kit', sku: '111111111_222222222' }, deps);
+  assert.equal(result.created, 0); assert.equal(result.existing, true);
+  assert(!calls.some(call => call.method === 'POST' && call.path === '/produtos'));
+  assert(calls.some(call => call.method === 'PUT' && call.path === '/produtos/estruturas/303'));
+}
+
 (async () => {
-  await testNewProduct(); await testExistingGtinPreservesVariation(); await testDuplicateGtinStopsWrites(); await testMissingVariationInheritsParentFiscalData(); await testPreviewDoesNotWrite(); await testApprovedEditsReachBling(); await testKitCreatesMissingComponentsFirst(); await testKitPreviewDoesNotWrite();
+  await testNewProduct(); await testExistingGtinPreservesVariation(); await testDuplicateGtinStopsWrites(); await testMissingVariationInheritsParentFiscalData(); await testPreviewDoesNotWrite(); await testApprovedEditsReachBling(); await testKitCreatesMissingComponentsFirst(); await testKitPreviewDoesNotWrite(); await testExistingSimpleProductBecomesKitWithoutDuplicate();
   console.log('Motor de automações: identidade, duplicidade e herança fiscal validadas com sucesso.');
 })().catch(error => { console.error(error); process.exit(1); });

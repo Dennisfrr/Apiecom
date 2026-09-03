@@ -280,7 +280,6 @@ async function createKit(sku, deps, progress) {
   const componentSkus = text(sku).split('_').filter(Boolean);
   if (componentSkus.length < 2) throw Object.assign(new Error('Informe pelo menos dois SKUs separados por underline.'), { step: 'produto' });
   const existing = await findBlingExact(deps.blingRequest, sku);
-  if (existing) return { parentSku: sku, product: existing.nome, created: 0, createdComponents: 0, existing: true, variations: componentSkus.length, stockUpdated: 0, images: 0, warnings: ['O kit já existia no Bling.'] };
   progress('linx', 'running');
   const components = [];
   let createdComponents = 0;
@@ -306,17 +305,44 @@ async function createKit(sku, deps, progress) {
     components.push({ local, bling: found });
   }
   progress('linx', 'done'); progress('produto', 'done'); progress('pai', 'done'); progress('grade', 'done'); progress('bling', 'done'); progress('comparando', 'done');
+  const expectedComponents = components.map(item => ({ produto: { id: item.bling.id }, quantidade: 1 }));
+  const sameStructure = structure => {
+    const current = Array.isArray(structure?.componentes) ? structure.componentes : [];
+    return current.length === expectedComponents.length && expectedComponents.every(expected => current.some(item => Number(item?.produto?.id) === Number(expected.produto.id) && Number(item?.quantidade) === 1));
+  };
+  if (existing?.id) {
+    try {
+      const structureResponse = await deps.blingRequest('GET', `/produtos/estruturas/${existing.id}`);
+      const structure = structureResponse.data?.data || structureResponse.data;
+      if (sameStructure(structure)) return { parentSku: sku, product: existing.nome, created: 0, createdComponents, existing: true, variations: components.length, stockUpdated: componentStocksUpdated, images: 0, warnings: [...componentWarnings, 'O kit e sua estrutura já existiam no Bling.'] };
+      throw Object.assign(new Error(`O produto ${sku} já possui uma estrutura diferente no Bling. Nenhuma estrutura foi substituída.`), { step: 'comparando' });
+    } catch (error) {
+      if (error.step === 'comparando') throw error;
+      if (!/[" ]status[" ]*:\s*(400|404)/i.test(error.message)) throw Object.assign(new Error(`Não foi possível validar a estrutura existente de ${sku}: ${error.message}`), { step: 'bling' });
+    }
+  }
   progress('gravando', 'running');
   const name = `KIT - ${components.map(item => item.local.name).join(' + ')}`.slice(0, 180);
   const images = components.map(item => item.local.image).filter(Boolean);
   const availability = Math.max(0, Math.floor(Math.min(...components.map(item => item.local.stock))));
-  const body = { nome: name, codigo: sku, preco: components.reduce((sum, item) => sum + item.local.price, 0), tipo: 'P', situacao: 'A', formato: 'S', marca: 'Puket', tipoEstoque: 'F', categoria: { id: DEFAULT_CATEGORY_ID }, tributacao: { ncm: DEFAULT_NCM }, ...(images.length ? { midia: media(images) } : {}), estrutura: { tipoEstoque: 'F', componentes: components.map(item => ({ produto: { id: item.bling.id }, quantidade: 1 })) } };
-  const response = await deps.blingRequest('POST', '/produtos', body);
-  const kit = response.data?.data || response.data;
-  progress('gravando', 'done'); progress('estoque', 'running');
-  if (availability > 0 && kit?.id) await deps.blingRequest('POST', '/estoques', { produto: { id: kit.id }, deposito: { id: DEFAULT_DEPOSIT_ID }, operacao: 'B', preco: body.preco, quantidade: availability, observacoes: 'Estoque automático do kit' });
-  progress('estoque', 'done');
-  return { parentSku: sku, product: name, created: 1, createdComponents, existing: false, variations: components.length, stockUpdated: componentStocksUpdated + (availability > 0 ? 1 : 0), images: images.length, warnings: componentWarnings };
+  const body = { nome: name, codigo: sku, preco: components.reduce((sum, item) => sum + item.local.price, 0), tipo: 'P', situacao: 'A', formato: 'E', marca: 'Puket', categoria: { id: DEFAULT_CATEGORY_ID }, tributacao: { ncm: DEFAULT_NCM }, ...(images.length ? { midia: media(images) } : {}) };
+  let kit = existing;
+  if (kit?.id) {
+    const detailResponse = await deps.blingRequest('GET', `/produtos/${kit.id}`);
+    const detail = detailResponse.data?.data || detailResponse.data;
+    await deps.blingRequest('PUT', `/produtos/${kit.id}`, { ...detail, ...body, formato: 'E' });
+  } else {
+    const response = await deps.blingRequest('POST', '/produtos', body);
+    kit = response.data?.data || response.data;
+  }
+  if (!kit?.id) throw Object.assign(new Error('O Bling não retornou o ID do produto do kit.'), { step: 'gravando' });
+  const structureBody = { tipoEstoque: 'V', lancamentoEstoque: 'M', componentes: expectedComponents };
+  await deps.blingRequest('PUT', `/produtos/estruturas/${kit.id}`, structureBody);
+  const verificationResponse = await deps.blingRequest('GET', `/produtos/estruturas/${kit.id}`);
+  const verified = verificationResponse.data?.data || verificationResponse.data;
+  if (!sameStructure(verified)) throw Object.assign(new Error(`O Bling não confirmou a estrutura do kit ${sku}.`), { step: 'gravando' });
+  progress('gravando', 'done'); progress('estoque', 'done');
+  return { parentSku: sku, product: name, created: existing ? 0 : 1, createdComponents, existing: Boolean(existing), variations: components.length, stockUpdated: componentStocksUpdated, kitAvailability: availability, images: images.length, warnings: componentWarnings };
 }
 
 async function previewKit(sku, deps) {
@@ -336,7 +362,20 @@ async function previewKit(sku, deps) {
     }
     components.push({ requestedSku: componentSku, parentSku: group.parentSku, childSku: local.childSku, barcode: local.barcode, name: local.name, image: local.image, price: local.price, stock: local.stock, status, blingId: found?.id || null, blingSku: text(found?.codigo) });
   }
-  return { kind: 'kit', operation: 'criar-kit', requestedSku: sku, canApprove: !warnings.length, kit: { sku, exists: Boolean(existingKit), name: `KIT - ${components.map(item => item.name).join(' + ')}`.slice(0, 180), price: components.reduce((sum, item) => sum + item.price, 0), availability: Math.max(0, Math.floor(Math.min(...components.map(item => item.stock)))) }, components, warnings };
+  let structureStatus = existingKit ? 'missing' : 'new';
+  if (existingKit?.id) {
+    try {
+      const response = await deps.blingRequest('GET', `/produtos/estruturas/${existingKit.id}`);
+      const structure = response.data?.data || response.data;
+      const expectedIds = components.map(item => Number(item.blingId)).filter(Boolean);
+      const current = Array.isArray(structure?.componentes) ? structure.componentes : [];
+      structureStatus = expectedIds.length === components.length && current.length === expectedIds.length && expectedIds.every(id => current.some(item => Number(item?.produto?.id) === id && Number(item?.quantidade) === 1)) ? 'valid' : 'conflict';
+      if (structureStatus === 'conflict') warnings.push(`O produto ${sku} já possui uma estrutura diferente no Bling.`);
+    } catch (error) {
+      if (!/[" ]status[" ]*:\s*(400|404)/i.test(error.message)) throw error;
+    }
+  }
+  return { kind: 'kit', operation: 'criar-kit', requestedSku: sku, canApprove: !warnings.length, kit: { sku, exists: structureStatus === 'valid', productExists: Boolean(existingKit), structureStatus, name: `KIT - ${components.map(item => item.name).join(' + ')}`.slice(0, 180), price: components.reduce((sum, item) => sum + item.price, 0), availability: Math.max(0, Math.floor(Math.min(...components.map(item => item.stock)))) }, components, warnings };
 }
 
 async function previewAutomation({ operation, sku }, deps) {
