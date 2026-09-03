@@ -1272,7 +1272,7 @@ function handler(req, res) {
           job.updatedAt = new Date().toISOString();
         };
         try {
-          const result = await executeAutomation({ operation, sku, edits }, { consultLinx: consultarProdutoLinxInterno, blingRequest, colors: coresMap }, progress);
+          const result = await executeAutomation({ operation, sku, edits }, { consultLinx: consultarProdutoLinxInterno, blingRequest, catalogSearch: catalogoBuscar, colors: coresMap }, progress);
           progress('final', result.warnings?.length ? 'warning' : 'done');
           job.result = result;
           job.status = result.warnings?.length ? 'warning' : 'completed';
