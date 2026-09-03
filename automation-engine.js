@@ -276,7 +276,7 @@ async function updateStock(group, parentId, deps, progress) {
   return { updated, warnings };
 }
 
-async function createKit(sku, deps, progress) {
+async function createKit(sku, deps, progress, edits = {}) {
   const componentSkus = text(sku).split('_').filter(Boolean);
   if (componentSkus.length < 2) throw Object.assign(new Error('Informe pelo menos dois SKUs separados por underline.'), { step: 'produto' });
   const existing = await findBlingExact(deps.blingRequest, sku);
@@ -310,12 +310,13 @@ async function createKit(sku, deps, progress) {
     const current = Array.isArray(structure?.componentes) ? structure.componentes : [];
     return current.length === expectedComponents.length && expectedComponents.every(expected => current.some(item => Number(item?.produto?.id) === Number(expected.produto.id) && Number(item?.quantidade) === 1));
   };
+  let structureAlreadyValid = false;
   if (existing?.id) {
     try {
       const structureResponse = await deps.blingRequest('GET', `/produtos/estruturas/${existing.id}`);
       const structure = structureResponse.data?.data || structureResponse.data;
-      if (sameStructure(structure)) return { parentSku: sku, product: existing.nome, created: 0, createdComponents, existing: true, variations: components.length, stockUpdated: componentStocksUpdated, images: 0, warnings: [...componentWarnings, 'O kit e sua estrutura já existiam no Bling.'] };
-      throw Object.assign(new Error(`O produto ${sku} já possui uma estrutura diferente no Bling. Nenhuma estrutura foi substituída.`), { step: 'comparando' });
+      if (sameStructure(structure)) structureAlreadyValid = true;
+      else throw Object.assign(new Error(`O produto ${sku} já possui uma estrutura diferente no Bling. Nenhuma estrutura foi substituída.`), { step: 'comparando' });
     } catch (error) {
       if (error.step === 'comparando') throw error;
       if (!/[" ]status[" ]*:\s*(400|404)/i.test(error.message)) throw Object.assign(new Error(`Não foi possível validar a estrutura existente de ${sku}: ${error.message}`), { step: 'bling' });
@@ -325,7 +326,7 @@ async function createKit(sku, deps, progress) {
   const name = `KIT - ${components.map(item => item.local.name).join(' + ')}`.slice(0, 180);
   const images = components.map(item => item.local.image).filter(Boolean);
   const availability = Math.max(0, Math.floor(Math.min(...components.map(item => item.local.stock))));
-  const body = { nome: name, codigo: sku, preco: components.reduce((sum, item) => sum + item.local.price, 0), tipo: 'P', situacao: 'A', formato: 'E', marca: 'Puket', categoria: { id: DEFAULT_CATEGORY_ID }, tributacao: { ncm: DEFAULT_NCM }, ...(images.length ? { midia: media(images) } : {}) };
+  const body = applyProductEdits({ nome: name, codigo: sku, preco: components.reduce((sum, item) => sum + item.local.price, 0), tipo: 'P', situacao: 'A', formato: 'E', marca: 'Puket', categoria: { id: DEFAULT_CATEGORY_ID }, tributacao: { ncm: DEFAULT_NCM }, ...(images.length ? { midia: media(images) } : {}) }, edits);
   let kit = existing;
   if (kit?.id) {
     const detailResponse = await deps.blingRequest('GET', `/produtos/${kit.id}`);
@@ -337,10 +338,12 @@ async function createKit(sku, deps, progress) {
   }
   if (!kit?.id) throw Object.assign(new Error('O Bling não retornou o ID do produto do kit.'), { step: 'gravando' });
   const structureBody = { tipoEstoque: 'V', lancamentoEstoque: 'M', componentes: expectedComponents };
-  await deps.blingRequest('PUT', `/produtos/estruturas/${kit.id}`, structureBody);
-  const verificationResponse = await deps.blingRequest('GET', `/produtos/estruturas/${kit.id}`);
-  const verified = verificationResponse.data?.data || verificationResponse.data;
-  if (!sameStructure(verified)) throw Object.assign(new Error(`O Bling não confirmou a estrutura do kit ${sku}.`), { step: 'gravando' });
+  if (!structureAlreadyValid) {
+    await deps.blingRequest('PUT', `/produtos/estruturas/${kit.id}`, structureBody);
+    const verificationResponse = await deps.blingRequest('GET', `/produtos/estruturas/${kit.id}`);
+    const verified = verificationResponse.data?.data || verificationResponse.data;
+    if (!sameStructure(verified)) throw Object.assign(new Error(`O Bling não confirmou a estrutura do kit ${sku}.`), { step: 'gravando' });
+  }
   progress('gravando', 'done'); progress('estoque', 'done');
   return { parentSku: sku, product: name, created: existing ? 0 : 1, createdComponents, existing: Boolean(existing), variations: components.length, stockUpdated: componentStocksUpdated, kitAvailability: availability, images: images.length, warnings: componentWarnings };
 }
@@ -363,7 +366,10 @@ async function previewKit(sku, deps) {
     components.push({ requestedSku: componentSku, parentSku: group.parentSku, childSku: local.childSku, barcode: local.barcode, name: local.name, image: local.image, price: local.price, stock: local.stock, status, blingId: found?.id || null, blingSku: text(found?.codigo) });
   }
   let structureStatus = existingKit ? 'missing' : 'new';
+  let existingDetail = null;
   if (existingKit?.id) {
+    const detailResponse = await deps.blingRequest('GET', `/produtos/${existingKit.id}`);
+    existingDetail = detailResponse.data?.data || detailResponse.data;
     try {
       const response = await deps.blingRequest('GET', `/produtos/estruturas/${existingKit.id}`);
       const structure = response.data?.data || response.data;
@@ -375,7 +381,11 @@ async function previewKit(sku, deps) {
       if (!/[" ]status[" ]*:\s*(400|404)/i.test(error.message)) throw error;
     }
   }
-  return { kind: 'kit', operation: 'criar-kit', requestedSku: sku, canApprove: !warnings.length, kit: { sku, exists: structureStatus === 'valid', productExists: Boolean(existingKit), structureStatus, name: `KIT - ${components.map(item => item.name).join(' + ')}`.slice(0, 180), price: components.reduce((sum, item) => sum + item.price, 0), availability: Math.max(0, Math.floor(Math.min(...components.map(item => item.stock)))) }, components, warnings };
+  const suggestedName = `KIT - ${components.map(item => item.name).join(' + ')}`.slice(0, 180);
+  const name = text(existingDetail?.nome) || suggestedName;
+  const specs = productSpecs(name);
+  const images = [...new Set([...components.map(item => item.image).filter(Boolean), ...blingImages(existingDetail)])];
+  return { kind: 'kit', operation: 'criar-kit', requestedSku: sku, canApprove: !warnings.length, kit: { sku, exists: structureStatus === 'valid', productExists: Boolean(existingKit), structureStatus, name, description: text(existingDetail?.descricaoComplementar) || `Kit composto por:\n${components.map(item => `• ${item.name}`).join('\n')}`, price: number(existingDetail?.preco) || components.reduce((sum, item) => sum + item.price, 0), images, ncm: text(existingDetail?.tributacao?.ncm || DEFAULT_NCM), categoryId: existingDetail?.categoria?.id || DEFAULT_CATEGORY_ID, dimensions: { width: number(existingDetail?.dimensoes?.largura) || specs.dimensoes.largura, height: number(existingDetail?.dimensoes?.altura) || specs.dimensoes.altura, depth: number(existingDetail?.dimensoes?.profundidade) || specs.dimensoes.profundidade, netWeight: number(existingDetail?.pesoLiquido) || specs.pesoLiquido, grossWeight: number(existingDetail?.pesoBruto) || specs.pesoBruto }, availability: Math.max(0, Math.floor(Math.min(...components.map(item => item.stock)))) }, components, warnings };
 }
 
 async function previewAutomation({ operation, sku }, deps) {
@@ -484,7 +494,7 @@ async function previewAutomation({ operation, sku }, deps) {
 async function executeAutomation({ operation, sku, edits = {} }, deps, progress = () => {}) {
   const normalizedSku = text(sku).toUpperCase();
   if (!normalizedSku) throw new Error('Informe o SKU.');
-  if (operation === 'criar-kit') return createKit(normalizedSku, deps, progress);
+  if (operation === 'criar-kit') return createKit(normalizedSku, deps, progress, edits);
   const group = await loadGroup(normalizedSku, deps, progress);
   const readOnly = operation === 'verificar-cadastro';
   if (readOnly) {
