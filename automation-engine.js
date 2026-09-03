@@ -279,18 +279,33 @@ async function updateStock(group, parentId, deps, progress) {
 async function createKit(sku, deps, progress) {
   const componentSkus = text(sku).split('_').filter(Boolean);
   if (componentSkus.length < 2) throw Object.assign(new Error('Informe pelo menos dois SKUs separados por underline.'), { step: 'produto' });
+  const existing = await findBlingExact(deps.blingRequest, sku);
+  if (existing) return { parentSku: sku, product: existing.nome, created: 0, createdComponents: 0, existing: true, variations: componentSkus.length, stockUpdated: 0, images: 0, warnings: ['O kit já existia no Bling.'] };
   progress('linx', 'running');
   const components = [];
+  let createdComponents = 0;
+  let componentStocksUpdated = 0;
+  const componentWarnings = [];
   for (const componentSku of componentSkus) {
     const group = await loadGroup(componentSku, deps, () => {});
     const local = group.items.find(item => item.base === componentSku || item.childSku === componentSku || item.barcode === componentSku) || group.items[0];
-    const found = await findBlingExact(deps.blingRequest, local.childSku) || await findBlingExact(deps.blingRequest, componentSku);
-    if (!found) throw Object.assign(new Error(`O componente ${componentSku} ainda não existe no Bling.`), { step: 'bling' });
+    let found = await findBlingExact(deps.blingRequest, local.childSku) || await findBlingExact(deps.blingRequest, componentSku);
+    if (!found) {
+      const ensured = await ensureProduct(group, deps, () => {});
+      createdComponents += ensured.created > 0 ? 1 : 0;
+      componentWarnings.push(...ensured.warnings);
+      if (!ensured.parent?.id) throw Object.assign(new Error(`O produto-base do componente ${componentSku} foi criado sem identificação no Bling.`), { step: 'bling' });
+      const stock = await updateStock(group, ensured.parent.id, deps, () => {});
+      componentStocksUpdated += stock.updated;
+      componentWarnings.push(...stock.warnings);
+      const detailResponse = await deps.blingRequest('GET', `/produtos/${ensured.parent.id}`);
+      const detail = detailResponse.data?.data || detailResponse.data;
+      found = resolveVariation(local, Array.isArray(detail?.variacoes) ? detail.variacoes : []).variation;
+    }
+    if (!found?.id) throw Object.assign(new Error(`Não foi possível identificar o componente ${componentSku} no Bling após o cadastro.`), { step: 'bling' });
     components.push({ local, bling: found });
   }
   progress('linx', 'done'); progress('produto', 'done'); progress('pai', 'done'); progress('grade', 'done'); progress('bling', 'done'); progress('comparando', 'done');
-  const existing = await findBlingExact(deps.blingRequest, sku);
-  if (existing) return { parentSku: sku, product: existing.nome, created: 0, existing: true, variations: components.length, stockUpdated: 0, images: 0, warnings: ['O kit já existia no Bling.'] };
   progress('gravando', 'running');
   const name = `KIT - ${components.map(item => item.local.name).join(' + ')}`.slice(0, 180);
   const images = components.map(item => item.local.image).filter(Boolean);
@@ -301,7 +316,7 @@ async function createKit(sku, deps, progress) {
   progress('gravando', 'done'); progress('estoque', 'running');
   if (availability > 0 && kit?.id) await deps.blingRequest('POST', '/estoques', { produto: { id: kit.id }, deposito: { id: DEFAULT_DEPOSIT_ID }, operacao: 'B', preco: body.preco, quantidade: availability, observacoes: 'Estoque automático do kit' });
   progress('estoque', 'done');
-  return { parentSku: sku, product: name, created: 1, existing: false, variations: components.length, stockUpdated: availability > 0 ? 1 : 0, images: images.length, warnings: [] };
+  return { parentSku: sku, product: name, created: 1, createdComponents, existing: false, variations: components.length, stockUpdated: componentStocksUpdated + (availability > 0 ? 1 : 0), images: images.length, warnings: componentWarnings };
 }
 
 async function previewAutomation({ operation, sku }, deps) {

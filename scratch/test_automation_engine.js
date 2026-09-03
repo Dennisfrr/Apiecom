@@ -99,7 +99,32 @@ async function testApprovedEditsReachBling() {
   assert.deepEqual(update.midia.imagens.imagensURL.map(item => item.link), ['https://img.test/principal.png', 'https://img.test/segunda.png']);
 }
 
+async function testKitCreatesMissingComponentsFirst() {
+  const calls = [];
+  const componentIds = { '111111111': { parent: 101, variation: 111 }, '222222222': { parent: 202, variation: 222 } };
+  const deps = {
+    colors: { '001': 'AZUL' },
+    consultLinx: async sku => ({ Produtos: [{ Referencia: sku, CodigoAuxiliar: `${sku}001UN`, NomeProduto: `PRODUTO ${sku}`, PrecoVenda: 50, Saldo: 3, Codebars: [{ Principal: true, Codebar: `789${sku}` }] }] }),
+    blingRequest: async (method, path, body) => {
+      calls.push({ method, path, body });
+      if (method === 'GET' && path.startsWith('/produtos?')) return { data: { data: [] } };
+      if (method === 'POST' && path === '/produtos' && body.formato === 'V') return { data: { data: { id: componentIds[body.codigo].parent } } };
+      if (method === 'GET' && /^\/produtos\/(101|202)$/.test(path)) {
+        const entry = Object.values(componentIds).find(value => String(value.parent) === path.split('/').pop());
+        return { data: { data: { id: entry.parent, variacoes: [{ id: entry.variation, codigo: path.includes('101') ? '111111111_AZUL_UN' : '222222222_AZUL_UN', gtin: path.includes('101') ? '789111111111' : '789222222222' }] } } };
+      }
+      if (method === 'POST' && path === '/estoques') return { data: { data: {} } };
+      if (method === 'POST' && path === '/produtos' && body.formato === 'S') return { data: { data: { id: 303 } } };
+      throw new Error(`Chamada inesperada: ${method} ${path}`);
+    },
+  };
+  const result = await executeAutomation({ operation: 'criar-kit', sku: '111111111_222222222' }, deps);
+  const kit = calls.find(call => call.method === 'POST' && call.path === '/produtos' && call.body.formato === 'S');
+  assert.deepEqual(kit.body.estrutura.componentes.map(item => item.produto.id), [111, 222]);
+  assert.equal(result.createdComponents, 2); assert.equal(result.created, 1);
+}
+
 (async () => {
-  await testNewProduct(); await testExistingGtinPreservesVariation(); await testDuplicateGtinStopsWrites(); await testMissingVariationInheritsParentFiscalData(); await testPreviewDoesNotWrite(); await testApprovedEditsReachBling();
+  await testNewProduct(); await testExistingGtinPreservesVariation(); await testDuplicateGtinStopsWrites(); await testMissingVariationInheritsParentFiscalData(); await testPreviewDoesNotWrite(); await testApprovedEditsReachBling(); await testKitCreatesMissingComponentsFirst();
   console.log('Motor de automações: identidade, duplicidade e herança fiscal validadas com sucesso.');
 })().catch(error => { console.error(error); process.exit(1); });
