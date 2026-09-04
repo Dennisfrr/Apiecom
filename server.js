@@ -1014,14 +1014,21 @@ function setupSocket(server) {
 }
 
 // ── Proxy Catálogo Puket (Grupo Único) ──
-function catalogoBuscar(pesquisa) {
+function catalogoBuscar(pesquisa, options = {}) {
   return new Promise((resolve, reject) => {
     const postData = querystring.stringify({
       CodigoCliente: CATALOGO_CLIENT_ID,
       IDCatalogo: '0',
       Pesquisa: pesquisa,
-      QuantidadeRegistrosPagina: 20,
-      PaginaAtual: 0
+      OrderCatalogo: options.ordem || undefined,
+      QuantidadeRegistrosPagina: Math.min(60, Math.max(1, Number(options.limite) || 20)),
+      PaginaAtual: Math.max(0, Number(options.pagina) || 0),
+      Linhas: options.linhas || undefined,
+      Grupos: options.grupos || undefined,
+      Cores: options.cores || undefined,
+      Sexos: options.sexos || undefined,
+      Tamanhos: options.tamanhos || undefined,
+      Solucoes: options.solucoes || undefined,
     });
 
     const req = nodehttps.request({
@@ -1068,6 +1075,24 @@ function catalogoBuscar(pesquisa) {
     req.write(postData);
     req.end();
   });
+}
+
+function catalogoFiltros() {
+  const endpoints = { linhas: '/Produtos/Linhas', grupos: '/Produtos/Grupos', tamanhos: '/Produtos/Tamanhos', sexos: '/Produtos/Sexo', cores: '/Produtos/Cores', solucoes: '/Produtos/Solucoes' };
+  return Promise.all(Object.entries(endpoints).map(([key, path]) => new Promise((resolve, reject) => {
+    const postData = querystring.stringify({ CodigoCliente: CATALOGO_CLIENT_ID, IDCatalogo: '0' });
+    const request = nodehttps.request({ hostname: 'ti.grupounico.com', path, method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(postData) } }, response => {
+      let data = '';
+      response.on('data', chunk => { data += chunk; });
+      response.on('end', () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) return reject(new Error(`Catálogo respondeu ${response.statusCode} em ${path}`));
+        try { resolve([key, JSON.parse(data)]); } catch (_) { reject(new Error(`Resposta inválida dos filtros em ${path}`)); }
+      });
+    });
+    request.on('error', reject);
+    request.write(postData);
+    request.end();
+  }))).then(entries => Object.fromEntries(entries));
 }
 
 // ── Proxy Linx ──
@@ -2516,13 +2541,10 @@ function handler(req, res) {
     const pesquisa = (parsed.query.q || '').trim();
     const ref = (parsed.query.ref || '').trim();
     const termo = pesquisa || ref;
-    if (!termo) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Parâmetro q ou ref obrigatório' }));
-      return;
-    }
+    const list = value => String(value || '').split(',').map(item => item.trim()).filter(Boolean);
+    const options = { pagina: parsed.query.pagina, limite: parsed.query.limite, ordem: parsed.query.ordem, linhas: list(parsed.query.linhas), grupos: list(parsed.query.grupos), cores: list(parsed.query.cores), sexos: list(parsed.query.sexos), tamanhos: list(parsed.query.tamanhos), solucoes: list(parsed.query.solucoes) };
     console.log(`[CATÁLOGO] Buscando: "${termo}"`);
-    catalogoBuscar(termo)
+    catalogoBuscar(termo, options)
       .then(products => {
         // Se buscou por ref, tentar match exato pelo ID
         let result = products;
@@ -2531,13 +2553,24 @@ function handler(req, res) {
           if (exact) result = [exact];
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, total: result.length, produtos: result }));
+        res.end(JSON.stringify({ success: true, total: result.length, pagina: Math.max(0, Number(options.pagina) || 0), limite: Math.min(60, Math.max(1, Number(options.limite) || 20)), temMais: result.length >= (Number(options.limite) || 20), produtos: result }));
       })
       .catch(e => {
         console.error('Erro catálogo:', e.message);
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, error: e.message }));
       });
+    return;
+  }
+
+  if (reqPath === '/api/catalogo/filtros' && req.method === 'GET') {
+    catalogoFiltros().then(filters => {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600' });
+      res.end(JSON.stringify({ success: true, filtros: filters }));
+    }).catch(error => {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: error.message }));
+    });
     return;
   }
 
