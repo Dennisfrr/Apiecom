@@ -20,6 +20,36 @@ async function testNewProduct() {
   assert(calls.some(call => call.method === 'POST' && call.path === '/produtos'));
 }
 
+async function testBarcodeExpandsToFullVariationGrid() {
+  const calls = [];
+  const single = { Produtos: [{ Referencia: '030402879', CodigoAuxiliar: '0304028791452', NomeProduto: 'PIJAMA TESTE', PrecoVenda: 99.9, Saldo: 4, Codebars: [{ Principal: true, Codebar: '7900000000001' }] }] };
+  const full = { Produtos: [
+    single.Produtos[0],
+    { ...single.Produtos[0], CodigoAuxiliar: '0304028791454', Codebars: [{ Principal: true, Codebar: '7900000000002' }] },
+    { ...single.Produtos[0], CodigoAuxiliar: '0304028791456', Codebars: [{ Principal: true, Codebar: '7900000000003' }] },
+  ] };
+  const deps = {
+    colors: { 145: 'ROSA' },
+    consultLinx: async sku => sku === '030402879' ? full : single,
+    blingRequest: async (method, path, body) => {
+      calls.push({ method, path, body });
+      if (method === 'GET' && path.startsWith('/produtos?')) return { data: { data: [] } };
+      if (method === 'POST' && path === '/produtos') return { data: { data: { id: 70 } } };
+      if (method === 'GET' && path === '/produtos/70') return { data: { data: { id: 70, variacoes: body?.variacoes || [
+        { id: 71, codigo: '030402879_ROSA_2', gtin: '7900000000001' },
+        { id: 72, codigo: '030402879_ROSA_4', gtin: '7900000000002' },
+        { id: 73, codigo: '030402879_ROSA_6', gtin: '7900000000003' },
+      ] } } };
+      if (method === 'POST' && path === '/estoques') return { data: { data: {} } };
+      throw new Error(`Chamada inesperada: ${method} ${path}`);
+    },
+  };
+  const result = await executeAutomation({ operation: 'cadastrar-produto', sku: '7900000000001' }, deps);
+  const creation = calls.find(call => call.method === 'POST' && call.path === '/produtos');
+  assert.equal(creation.body.variacoes.length, 3);
+  assert.equal(result.variations, 3);
+}
+
 async function testExistingGtinPreservesVariation() {
   const oldVariation = { id: 21, codigo: '030402879_PINK_2', gtin: '7900000000001' };
   const { calls, deps } = dependencies(async (method, path, body) => {
@@ -164,6 +194,6 @@ async function testExistingSimpleProductBecomesKitWithoutDuplicate() {
 }
 
 (async () => {
-  await testNewProduct(); await testExistingGtinPreservesVariation(); await testDuplicateGtinStopsWrites(); await testMissingVariationInheritsParentFiscalData(); await testPreviewDoesNotWrite(); await testApprovedEditsReachBling(); await testKitCreatesMissingComponentsFirst(); await testKitPreviewDoesNotWrite(); await testExistingSimpleProductBecomesKitWithoutDuplicate();
+  await testNewProduct(); await testBarcodeExpandsToFullVariationGrid(); await testExistingGtinPreservesVariation(); await testDuplicateGtinStopsWrites(); await testMissingVariationInheritsParentFiscalData(); await testPreviewDoesNotWrite(); await testApprovedEditsReachBling(); await testKitCreatesMissingComponentsFirst(); await testKitPreviewDoesNotWrite(); await testExistingSimpleProductBecomesKitWithoutDuplicate();
   console.log('Motor de automações: identidade, duplicidade e herança fiscal validadas com sucesso.');
 })().catch(error => { console.error(error); process.exit(1); });

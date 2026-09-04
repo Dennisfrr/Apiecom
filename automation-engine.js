@@ -205,9 +205,14 @@ async function loadGroup(sku, deps, progress) {
   progress('linx', 'running');
   const raw = await deps.consultLinx(sku);
   progress('linx', 'done'); progress('produto', 'running');
-  const items = normalizeLinxProducts(raw, sku, deps.colors);
+  let items = normalizeLinxProducts(raw, sku, deps.colors);
   if (!items.length) throw Object.assign(new Error(`O SKU ${sku} não foi encontrado na Linx.`), { step: 'produto' });
   const parentSku = items[0].parentSku;
+  if (text(sku).toUpperCase() !== text(parentSku).toUpperCase()) {
+    const fullRaw = await deps.consultLinx(parentSku);
+    const fullItems = normalizeLinxProducts(fullRaw, parentSku, deps.colors);
+    if (fullItems.length > items.length) items = fullItems;
+  }
   progress('produto', 'done'); progress('pai', 'done'); progress('grade', 'done');
   return { parentSku, items };
 }
