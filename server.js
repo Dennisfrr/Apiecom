@@ -879,7 +879,7 @@ function consultarDeepSeek(messages) {
       model: DEEPSEEK_MODEL,
       messages,
       temperature: 0.2,
-      max_tokens: 900,
+      max_tokens: 2000,
     });
     const request = https.request({
       hostname: 'api.deepseek.com',
@@ -1093,6 +1093,104 @@ function catalogoFiltros() {
     request.write(postData);
     request.end();
   }))).then(entries => Object.fromEntries(entries));
+}
+
+let catalogoFiltrosCache = null;
+let catalogoFiltrosCacheEm = 0;
+
+function normalizarTermoBusca(valor) {
+  return String(valor || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+async function obterFiltrosCatalogoComCache() {
+  if (catalogoFiltrosCache && Date.now() - catalogoFiltrosCacheEm < 60 * 60 * 1000) return catalogoFiltrosCache;
+  catalogoFiltrosCache = await catalogoFiltros();
+  catalogoFiltrosCacheEm = Date.now();
+  return catalogoFiltrosCache;
+}
+
+function localizarFiltroNaMensagem(lista, mensagemNormalizada, permitirPalavraParcial = false) {
+  const palavrasMensagem = new Set(mensagemNormalizada.split(/\s+/).filter(palavra => palavra.length >= 3));
+  return (Array.isArray(lista) ? lista : []).filter(item => {
+    const descricao = normalizarTermoBusca(item.descricao);
+    if (!descricao) return false;
+    if (descricao.length <= 2) return palavrasMensagem.has(descricao);
+    const expressaoExata = new RegExp(`(^|\\s)${descricao.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=\\s|$)`);
+    if (expressaoExata.test(mensagemNormalizada)) return true;
+    if (!permitirPalavraParcial) return false;
+    const palavras = descricao.split(/\s+/).filter(palavra => palavra.length >= 4 && !['para', 'com', 'familia'].includes(palavra));
+    return palavras.some(palavra => palavrasMensagem.has(palavra));
+  });
+}
+
+async function consultarCatalogoParaAssistente(mensagem) {
+  const mensagemNormalizada = normalizarTermoBusca(mensagem);
+  const pareceBusca = /\b(catalogo|produto|produtos|encontr|buscar|busca|procure|mostre|colecao|linha|stitch|praia)\b/.test(mensagemNormalizada);
+  if (!pareceBusca) return null;
+
+  const filtros = await obterFiltrosCatalogoComCache();
+  const linhas = localizarFiltroNaMensagem(filtros.linhas, mensagemNormalizada);
+  const grupos = localizarFiltroNaMensagem(filtros.grupos, mensagemNormalizada);
+  const solucoes = localizarFiltroNaMensagem(filtros.solucoes, mensagemNormalizada, true);
+  const cores = localizarFiltroNaMensagem(filtros.cores, mensagemNormalizada);
+  const sexos = localizarFiltroNaMensagem(filtros.sexos, mensagemNormalizada);
+  const tamanhos = localizarFiltroNaMensagem(filtros.tamanhos, mensagemNormalizada);
+  const opcoes = {
+    limite: 30,
+    linhas: linhas.map(item => item.codigo),
+    grupos: grupos.map(item => item.codigo),
+    solucoes: solucoes.map(item => item.codigo),
+    cores: cores.map(item => item.codigo),
+    sexos: sexos.map(item => item.codigo),
+    tamanhos: tamanhos.map(item => item.codigo),
+  };
+
+  const termosIgnorados = new Set(['encontre', 'buscar', 'busca', 'procure', 'mostre', 'produto', 'produtos', 'catalogo', 'ainda', 'nao', 'estao', 'esta', 'bling', 'quero', 'todos', 'todas', 'linha', 'colecao', 'que', 'para', 'com', 'sem', 'por', 'dos', 'das', 'nos', 'nas']);
+  const filtrosReconhecidos = [...linhas, ...grupos, ...solucoes, ...cores, ...sexos, ...tamanhos]
+    .flatMap(item => normalizarTermoBusca(item.descricao).split(/\s+/));
+  filtrosReconhecidos.forEach(termo => termosIgnorados.add(termo));
+  const pesquisa = mensagemNormalizada.split(/\s+/)
+    .filter(termo => termo.length >= 3 && !termosIgnorados.has(termo))
+    .slice(0, 4)
+    .join(' ');
+  const produtos = await catalogoBuscar(pesquisa, opcoes);
+  console.log(`[COPILOTO] Catálogo: pesquisa="${pesquisa}", linhas=${opcoes.linhas.join('|') || '-'}, grupos=${opcoes.grupos.join('|') || '-'}, solucoes=${opcoes.solucoes.join('|') || '-'}, cores=${opcoes.cores.join('|') || '-'}, tamanhos=${opcoes.tamanhos.join('|') || '-'}, resultados=${produtos.length}`);
+  const verificarNoBling = /\bbling\b|\bnao estao\b|\bnao existe\b|\bfaltam\b/.test(mensagemNormalizada);
+  const produtosCompactos = await Promise.all(produtos.slice(0, 30).map(async produto => {
+    let bling = null;
+    if (verificarNoBling) {
+      try { bling = await verificarSkuNoBlingParaAssistente(produto.id); }
+      catch (erro) { bling = { codigo: produto.id, erro: erro.message }; }
+    }
+    return {
+      sku: produto.id,
+      nome: produto.nome,
+      preco: normalizarNumero(produto.preco),
+      precoOriginal: normalizarNumero(produto.precoOriginal),
+      imagens: Array.isArray(produto.imagens) ? produto.imagens.length : 0,
+      variacoes: Array.isArray(produto.variacoes) ? produto.variacoes.length : 0,
+      bling,
+    };
+  }));
+
+  return {
+    pesquisa,
+    filtrosAplicados: {
+      linhas: linhas.map(item => item.descricao),
+      grupos: grupos.map(item => item.descricao),
+      solucoes: solucoes.map(item => item.descricao),
+      cores: cores.map(item => item.descricao),
+      sexos: sexos.map(item => item.descricao),
+      tamanhos: tamanhos.map(item => item.descricao),
+    },
+    totalEncontrado: produtos.length,
+    produtos: produtosCompactos,
+  };
 }
 
 // ── Proxy Linx ──
@@ -2079,6 +2177,12 @@ function handler(req, res) {
         .filter(item => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string')
         .map(item => ({ role: item.role, content: item.content.slice(0, 1500) }));
       const resumo = montarResumoEstoqueParaAssistente();
+      let consultaCatalogo = null;
+      try { consultaCatalogo = await consultarCatalogoParaAssistente(mensagem); }
+      catch (erro) { consultaCatalogo = { erro: erro.message }; }
+      const resumoParaModelo = consultaCatalogo
+        ? { ...resumo, produtos: resumo.produtos.slice(0, 30), kits: resumo.kits.slice(0, 10) }
+        : resumo;
       const pedidoVerificacaoSku = /\b(verifica|verificar|consulta|consultar|existe)\b/i.test(mensagem) && /\b(sku|c[oó]digo|bling)\b/i.test(mensagem);
       const skuSolicitado = mensagem.match(/\b\d{6,}(?:_[A-Z0-9]+)*\b/i)?.[0] || '';
       let consultaSkuBling = null;
@@ -2087,7 +2191,7 @@ function handler(req, res) {
         catch (erro) { consultaSkuBling = { codigo: skuSolicitado, erro: erro.message }; }
       }
       const instrucaoRascunhos = 'Voce pode preparar uma PROPOSTA de rascunho de kit quando o usuario pedir para montar ou criar um kit. Nao cadastre nem envie nada. Responda SOMENTE JSON valido: {"resposta":"texto","rascunhoKit":null ou {"nome":"KIT - nome","componentes":[{"codigo":"codigoParaKit","quantidade":1}]}}. Use apenas codigoParaKit dos produtos fornecidos. Se nao for pedido de kit, use rascunhoKit null.';
-      const instrucao = `Você é o Assistente de Estoque da Puket. Responda em português do Brasil, de forma objetiva e útil.\n\nVocê só pode analisar os dados fornecidos abaixo. Não invente produtos, quantidades, vendas, pedidos, dados do Bling ou ações realizadas. Você NÃO tem permissão para alterar estoque, cadastrar produto, criar kit ou enviar algo ao Bling. Quando a pergunta pedir uma alteração, explique o que deve ser feito e peça confirmação em uma próxima etapa.\n\nAo analisar kits, use disponibilidadePelosComponentes como o máximo possível de kits pelos componentes; informe se algum componente não foi localizado. Para recomendações, destaque riscos, SKUs e quantidades. Se os dados não forem suficientes, diga isso claramente.\n\nResumo atual do inventário:\n${JSON.stringify(resumo)}`;
+      const instrucao = `Você é o Assistente de Estoque da Puket. Responda em português do Brasil, de forma objetiva e útil.\n\nVocê só pode analisar os dados fornecidos abaixo. Não invente produtos, quantidades, vendas, pedidos, dados do Bling ou ações realizadas. Você NÃO tem permissão para alterar estoque, cadastrar produto, criar kit ou enviar algo ao Bling. Quando a pergunta pedir uma alteração, explique o que deve ser feito e peça confirmação em uma próxima etapa.\n\nQuando houver uma consultaCatalogo, ela foi executada ao vivo na API do catálogo Puket. Use esses resultados como fonte principal para perguntas de busca de produtos. O campo bling.encontrado informa se cada SKU já existe no Bling; quando for false, o produto ainda não está cadastrado. Liste nome e SKU dos resultados relevantes. Não diga que não encontrou no inventário quando a consulta do catálogo trouxe produtos.\n\nAo analisar kits, use disponibilidadePelosComponentes como o máximo possível de kits pelos componentes; informe se algum componente não foi localizado. Para recomendações, destaque riscos, SKUs e quantidades. Se os dados não forem suficientes, diga isso claramente.\n\nResumo atual do inventário:\n${JSON.stringify(resumoParaModelo)}\n\nConsulta ao catálogo realizada para esta mensagem:\n${JSON.stringify(consultaCatalogo)}`;
 
       try {
         const resposta = await consultarDeepSeek([
