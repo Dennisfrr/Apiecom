@@ -872,14 +872,15 @@ function montarCentralInteligente() {
   };
 }
 
-function consultarDeepSeek(messages) {
+function consultarDeepSeek(messages, options = {}) {
   return new Promise((resolve, reject) => {
     const chave = obterChaveDeepSeek();
     const payload = JSON.stringify({
       model: DEEPSEEK_MODEL,
       messages,
       temperature: 0.2,
-      max_tokens: 2000,
+      max_tokens: Math.min(8192, Math.max(500, Number(options.maxTokens) || 2000)),
+      ...(options.thinking ? { thinking: { type: options.thinking } } : {}),
     });
     const request = https.request({
       hostname: 'api.deepseek.com',
@@ -941,6 +942,26 @@ function interpretarRespostaDeepSeek(resposta) {
     try { return { resposta: JSON.parse(`"${trecho}"`), rascunhoKit: null }; }
     catch (_) { return { resposta: trecho.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\'), rascunhoKit: null }; }
   }
+}
+
+async function gerarDescricaoSeoProduto(dados) {
+  const nome = String(dados.nome || '').trim().slice(0, 180);
+  if (!nome) throw new Error('Informe o nome do produto.');
+  const fontes = [dados.descricaoCatalogo, dados.descricaoLinx, dados.descricaoAtual]
+    .map(valor => String(valor || '').trim().slice(0, 5000))
+    .filter((valor, indice, lista) => valor && lista.indexOf(valor) === indice);
+  const fatos = fontes.length ? fontes.join('\n\n---\n\n') : 'Nenhuma descrição adicional disponível. Use somente as informações explícitas no nome do produto.';
+  const resposta = await consultarDeepSeek([
+    {
+      role: 'system',
+      content: 'Você é um redator de e-commerce especialista em SEO para a marca Puket. Escreva em português do Brasil. REGRA ABSOLUTA: cada característica factual deve estar explicitamente presente nas informações fornecidas. Não deduza nem acrescente peças do conjunto, composição, material, cor, dimensões, proteção, resistência, secagem, durabilidade, modelagem, público, ocasião ou instruções ausentes. É proibido preencher lacunas com características comuns da categoria. Não mencione SEO, fontes, Linx, catálogo ou Bling. Não use HTML, Markdown, hashtags, emojis ou título separado.',
+    },
+    {
+      role: 'user',
+      content: `Crie uma descrição comercial otimizada para mecanismos de busca para o produto "${nome}". Use o nome e termos relevantes de forma natural, sem repetição artificial. Produza entre 450 e 900 caracteres, com 2 parágrafos curtos e uma seção "Características:" com no máximo 5 itens iniciados por •. Antes de incluir cada afirmação, confirme que ela aparece literalmente ou como paráfrase direta nas informações confiáveis. Termine com uma frase de compra natural que não prometa características novas. Responda somente com a descrição final.\n\nInformações confiáveis do produto:\n${fatos}`,
+    },
+  ], { maxTokens: 2000, thinking: 'disabled' });
+  return String(resposta || '').replace(/^```(?:text)?\s*|\s*```$/gi, '').trim().slice(0, 5000);
 }
 
 loadDB();
@@ -2181,6 +2202,31 @@ function handler(req, res) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, error: err.message }));
       }
+    });
+    return;
+  }
+
+  // Gera uma descrição comercial para revisão. A descrição só será enviada
+  // ao Bling quando o usuário aprovar o cadastro na etapa seguinte.
+  if (reqPath === '/api/descricao-seo' && req.method === 'POST') {
+    readJsonBody(req).then(async (body) => {
+      if (!obterChaveDeepSeek()) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'A geração por IA ainda não foi configurada no servidor.' }));
+        return;
+      }
+      try {
+        const descricao = await gerarDescricaoSeoProduto(body || {});
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ descricao }));
+      } catch (erro) {
+        console.error('[DESCRICAO-SEO] Erro:', erro.message);
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Não foi possível gerar a descrição: ${erro.message}` }));
+      }
+    }).catch(erro => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Dados inválidos: ' + erro.message }));
     });
     return;
   }
