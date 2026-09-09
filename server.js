@@ -914,6 +914,35 @@ function consultarDeepSeek(messages) {
   });
 }
 
+function interpretarRespostaDeepSeek(resposta) {
+  const limpa = String(resposta || '').replace(/^```(?:json)?\s*|\s*```$/gi, '').trim();
+  try {
+    const json = JSON.parse(limpa);
+    return {
+      resposta: typeof json.resposta === 'string' ? json.resposta : limpa,
+      rascunhoKit: json.rascunhoKit || null,
+    };
+  } catch (_) {
+    // Se o modelo atingir o limite de saída no meio do JSON, recupera somente
+    // o valor textual de "resposta" para nunca expor JSON bruto na interface.
+    const marcador = limpa.match(/"resposta"\s*:\s*"/i);
+    if (!marcador || marcador.index == null) return { resposta: limpa, rascunhoKit: null };
+    const inicio = marcador.index + marcador[0].length;
+    let trecho = '';
+    let escapado = false;
+    for (let indice = inicio; indice < limpa.length; indice += 1) {
+      const caractere = limpa[indice];
+      if (!escapado && caractere === '"') break;
+      trecho += caractere;
+      if (caractere === '\\' && !escapado) escapado = true;
+      else escapado = false;
+    }
+    if (trecho.endsWith('\\')) trecho = trecho.slice(0, -1);
+    try { return { resposta: JSON.parse(`"${trecho}"`), rascunhoKit: null }; }
+    catch (_) { return { resposta: trecho.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\'), rascunhoKit: null }; }
+  }
+}
+
 loadDB();
 
 // ── Dicionário de Cores ──
@@ -1161,7 +1190,7 @@ async function consultarCatalogoParaAssistente(mensagem) {
   const produtos = await catalogoBuscar(pesquisa, opcoes);
   console.log(`[COPILOTO] Catálogo: pesquisa="${pesquisa}", linhas=${opcoes.linhas.join('|') || '-'}, grupos=${opcoes.grupos.join('|') || '-'}, solucoes=${opcoes.solucoes.join('|') || '-'}, cores=${opcoes.cores.join('|') || '-'}, tamanhos=${opcoes.tamanhos.join('|') || '-'}, resultados=${produtos.length}`);
   const verificarNoBling = /\bbling\b|\bnao estao\b|\bnao existe\b|\bfaltam\b/.test(mensagemNormalizada);
-  const produtosCompactos = await Promise.all(produtos.slice(0, 30).map(async produto => {
+  const produtosCompactos = await Promise.all(produtos.slice(0, 15).map(async produto => {
     let bling = null;
     if (verificarNoBling) {
       try { bling = await verificarSkuNoBlingParaAssistente(produto.id); }
@@ -2191,7 +2220,7 @@ function handler(req, res) {
         catch (erro) { consultaSkuBling = { codigo: skuSolicitado, erro: erro.message }; }
       }
       const instrucaoRascunhos = 'Voce pode preparar uma PROPOSTA de rascunho de kit quando o usuario pedir para montar ou criar um kit. Nao cadastre nem envie nada. Responda SOMENTE JSON valido: {"resposta":"texto","rascunhoKit":null ou {"nome":"KIT - nome","componentes":[{"codigo":"codigoParaKit","quantidade":1}]}}. Use apenas codigoParaKit dos produtos fornecidos. Se nao for pedido de kit, use rascunhoKit null.';
-      const instrucao = `Você é o Assistente de Estoque da Puket. Responda em português do Brasil, de forma objetiva e útil.\n\nVocê só pode analisar os dados fornecidos abaixo. Não invente produtos, quantidades, vendas, pedidos, dados do Bling ou ações realizadas. Você NÃO tem permissão para alterar estoque, cadastrar produto, criar kit ou enviar algo ao Bling. Quando a pergunta pedir uma alteração, explique o que deve ser feito e peça confirmação em uma próxima etapa.\n\nQuando houver uma consultaCatalogo, ela foi executada ao vivo na API do catálogo Puket. Use esses resultados como fonte principal para perguntas de busca de produtos. O campo bling.encontrado informa se cada SKU já existe no Bling; quando for false, o produto ainda não está cadastrado. Liste nome e SKU dos resultados relevantes. Não diga que não encontrou no inventário quando a consulta do catálogo trouxe produtos.\n\nAo analisar kits, use disponibilidadePelosComponentes como o máximo possível de kits pelos componentes; informe se algum componente não foi localizado. Para recomendações, destaque riscos, SKUs e quantidades. Se os dados não forem suficientes, diga isso claramente.\n\nResumo atual do inventário:\n${JSON.stringify(resumoParaModelo)}\n\nConsulta ao catálogo realizada para esta mensagem:\n${JSON.stringify(consultaCatalogo)}`;
+      const instrucao = `Você é o Assistente de Estoque da Puket. Responda em português do Brasil, de forma objetiva e útil.\n\nVocê só pode analisar os dados fornecidos abaixo. Não invente produtos, quantidades, vendas, pedidos, dados do Bling ou ações realizadas. Você NÃO tem permissão para alterar estoque, cadastrar produto, criar kit ou enviar algo ao Bling. Quando a pergunta pedir uma alteração, explique o que deve ser feito e peça confirmação em uma próxima etapa.\n\nQuando houver uma consultaCatalogo, ela foi executada ao vivo na API do catálogo Puket. Use esses resultados como fonte principal para perguntas de busca de produtos. O campo bling.encontrado informa se cada SKU já existe no Bling; quando for false, o produto ainda não está cadastrado. Liste no máximo 12 resultados, sempre com nome e SKU. Quando houver mais resultados, informe quantos ficaram fora da lista. Não diga que não encontrou no inventário quando a consulta do catálogo trouxe produtos.\n\nAo analisar kits, use disponibilidadePelosComponentes como o máximo possível de kits pelos componentes; informe se algum componente não foi localizado. Para recomendações, destaque riscos, SKUs e quantidades. Se os dados não forem suficientes, diga isso claramente.\n\nResumo atual do inventário:\n${JSON.stringify(resumoParaModelo)}\n\nConsulta ao catálogo realizada para esta mensagem:\n${JSON.stringify(consultaCatalogo)}`;
 
       try {
         const resposta = await consultarDeepSeek([
@@ -2200,21 +2229,21 @@ function handler(req, res) {
           ...mensagensAnteriores,
           { role: 'user', content: `${mensagem}${consultaSkuBling ? `\n\nConsulta ao Bling feita agora (somente leitura): ${JSON.stringify(consultaSkuBling)}` : ''}` },
         ]);
-        let resultado = { resposta, rascunhoKit: null };
+        let resultado = interpretarRespostaDeepSeek(resposta);
         try {
-          const json = JSON.parse(resposta.replace(/^```json\s*|\s*```$/g, '').trim());
-          if (typeof json.resposta === 'string') resultado.resposta = json.resposta;
-          if (json.rascunhoKit && Array.isArray(json.rascunhoKit.componentes)) {
-            const componentes = json.rascunhoKit.componentes.map(componente => {
+          if (resultado.rascunhoKit && Array.isArray(resultado.rascunhoKit.componentes)) {
+            const componentes = resultado.rascunhoKit.componentes.map(componente => {
               const codigo = String(componente.codigo || '').trim();
               const item = globalInventory.find(produto => !produto.isKit && [produto.codBase, produto.codebar, produto.referencia].map(valor => String(valor || '').trim()).includes(codigo));
               return item && codigo ? { codigo, nome: item.nome, quantidade: Math.max(1, normalizarNumero(componente.quantidade) || 1), disponivel: normalizarNumero(item.qtd), preco: normalizarNumero(item.preco) } : null;
             }).filter(Boolean);
-            if (componentes.length === json.rascunhoKit.componentes.length && componentes.length >= 2) {
-              resultado.rascunhoKit = { nome: String(json.rascunhoKit.nome || 'KIT - Novo Kit').slice(0, 180), componentes, disponibilidade: Math.floor(Math.min(...componentes.map(item => item.disponivel / item.quantidade))), preco: componentes.reduce((total, item) => total + item.preco * item.quantidade, 0) };
+            if (componentes.length === resultado.rascunhoKit.componentes.length && componentes.length >= 2) {
+              resultado.rascunhoKit = { nome: String(resultado.rascunhoKit.nome || 'KIT - Novo Kit').slice(0, 180), componentes, disponibilidade: Math.floor(Math.min(...componentes.map(item => item.disponivel / item.quantidade))), preco: componentes.reduce((total, item) => total + item.preco * item.quantidade, 0) };
+            } else {
+              resultado.rascunhoKit = null;
             }
           }
-        } catch (_) { /* resposta livre do modelo */ }
+        } catch (_) { resultado.rascunhoKit = null; }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(resultado));
       } catch (erro) {
