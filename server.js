@@ -2574,30 +2574,24 @@ function handler(req, res) {
       const resultados = {};
       res.writeHead(200, { 'Content-Type': 'application/json' });
 
-      const blingGet = async (cod) => {
-        // pagina e limite são obrigatórios em alguns endpoints Bling v3
-        return blingRequest('GET', `/produtos?codigo=${encodeURIComponent(cod)}&pagina=1&limite=1`);
-      };
-
       for (const cod of codigos) {
         try {
-          let r;
+          let prodBasico;
           try {
-            r = await blingGet(cod);
+            prodBasico = await buscarProdutoBlingExato(cod);
           } catch (e1) {
             // 500 do Bling: aguarda 1s e tenta mais uma vez
             const isServerError = e1.message && e1.message.includes('"status":500');
             if (isServerError) {
               console.log(`[Bling] 500 em "${cod}", retentando...`);
               await new Promise(res => setTimeout(res, 1000));
-              r = await blingGet(cod);
+              prodBasico = await buscarProdutoBlingExato(cod);
             } else {
               throw e1;
             }
           }
 
-          if (r.data && r.data.data && r.data.data.length > 0) {
-            const prodBasico = r.data.data[0];
+          if (prodBasico) {
             // Busca detalhes completos do produto para pegar as variacoes (IDs dos filhos)
             let variacoes = [];
             try {
