@@ -240,9 +240,18 @@ async function processBlingQueue() {
   while (blingQueue.length > 0) {
     const { fn, resolve, reject } = blingQueue.shift();
     try { resolve(await fn()); } catch (e) { reject(e); }
-    await new Promise(r => setTimeout(r, 350));
+    // Mantém margem abaixo do limite oficial de 3 req/s do Bling.
+    await new Promise(r => setTimeout(r, 450));
   }
   blingProcessing = false;
+}
+
+function isBlingRateLimitError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return message.includes('error code: 1015')
+    || message.includes('"status":429')
+    || message.includes('too many requests')
+    || message.includes('rate limit');
 }
 
 // ── Helper: request autenticado ao Bling ──
@@ -285,13 +294,25 @@ function blingRequest(method, apiPath, body) {
       if (jsonBody) req.write(jsonBody);
       req.end();
     });
-    try {
-      return await execute();
-    } catch (error) {
-      if (error.message !== 'TOKEN_EXPIRED') throw error;
-      console.log('[Bling] API respondeu 401; renovando token e repetindo a requisição uma vez...');
-      await refreshBlingToken();
-      return execute();
+    let tokenRefreshed = false;
+    let rateLimitAttempt = 0;
+    const rateLimitDelays = [5000, 10000, 20000];
+    for (;;) {
+      try {
+        return await execute();
+      } catch (error) {
+        if (error.message === 'TOKEN_EXPIRED' && !tokenRefreshed) {
+          tokenRefreshed = true;
+          console.log('[Bling] API respondeu 401; renovando token e repetindo a requisição uma vez...');
+          await refreshBlingToken();
+          continue;
+        }
+        if (!isBlingRateLimitError(error) || rateLimitAttempt >= rateLimitDelays.length) throw error;
+        const delay = rateLimitDelays[rateLimitAttempt];
+        rateLimitAttempt++;
+        console.warn(`[Bling] Limite temporário detectado em ${method} ${apiPath}. Nova tentativa em ${delay / 1000}s (${rateLimitAttempt}/${rateLimitDelays.length}).`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
     }
   });
 }
