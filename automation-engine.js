@@ -1,6 +1,7 @@
 const DEFAULT_CATEGORY_ID = Number(process.env.BLING_CATEGORY_ID || 11062477);
 const DEFAULT_DEPOSIT_ID = Number(process.env.BLING_DEPOSIT_ID || 14888166814);
 const DEFAULT_NCM = String(process.env.BLING_DEFAULT_NCM || '6108.31.00');
+const BLING_DIMENSION_UNIT_CENTIMETERS = 2;
 
 function text(value) { return String(value ?? '').trim(); }
 function number(value) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : 0; }
@@ -67,10 +68,10 @@ async function catalogContent(group, requestedSku, deps) {
 }
 function productSpecs(name) {
   const value = text(name).toLowerCase();
-  if (value.includes('pijama') || value.startsWith('pj')) return { pesoLiquido: .3, pesoBruto: .3, dimensoes: { largura: 30, altura: 20, profundidade: 20, unidadeMedida: 1 } };
-  if (value.includes('lancheira')) return { pesoLiquido: .5, pesoBruto: .6, dimensoes: { largura: 20.5, altura: 25, profundidade: 14.5, unidadeMedida: 1 } };
-  if (value.includes('mochila')) return { pesoLiquido: 1, pesoBruto: 1.1, dimensoes: { largura: 32, altura: 43, profundidade: 18, unidadeMedida: 1 } };
-  return { pesoLiquido: .2, pesoBruto: .25, dimensoes: { largura: 18, altura: 25, profundidade: 5, unidadeMedida: 1 } };
+  if (value.includes('pijama') || value.startsWith('pj')) return { pesoLiquido: .3, pesoBruto: .3, dimensoes: { largura: 30, altura: 20, profundidade: 20, unidadeMedida: BLING_DIMENSION_UNIT_CENTIMETERS } };
+  if (value.includes('lancheira')) return { pesoLiquido: .5, pesoBruto: .6, dimensoes: { largura: 20.5, altura: 25, profundidade: 14.5, unidadeMedida: BLING_DIMENSION_UNIT_CENTIMETERS } };
+  if (value.includes('mochila')) return { pesoLiquido: 1, pesoBruto: 1.1, dimensoes: { largura: 32, altura: 43, profundidade: 18, unidadeMedida: BLING_DIMENSION_UNIT_CENTIMETERS } };
+  return { pesoLiquido: .2, pesoBruto: .25, dimensoes: { largura: 18, altura: 25, profundidade: 5, unidadeMedida: BLING_DIMENSION_UNIT_CENTIMETERS } };
 }
 function measurementsFromDescription(value) {
   const source = text(value);
@@ -136,7 +137,7 @@ async function findBlingExact(blingRequest, sku) {
 
 function inheritedVariationFields(parent) {
   const fields = {};
-  for (const key of ['categoria', 'fornecedor', 'unidade', 'marca', 'tipoProducao', 'condicao', 'dimensoes']) {
+  for (const key of ['categoria', 'fornecedor', 'unidade', 'marca', 'tipoProducao', 'tipoEstoque', 'condicao', 'freteGratis', 'volumes', 'itensPorCaixa', 'pesoLiquido', 'pesoBruto', 'dimensoes']) {
     if (parent?.[key] !== undefined && parent[key] !== null && parent[key] !== '') fields[key] = parent[key];
   }
   if (parent?.tributacao && typeof parent.tributacao === 'object') fields.tributacao = { ...parent.tributacao };
@@ -176,15 +177,17 @@ function parentPayload(parentSku, items) {
   const specs = productSpecs(first.name);
   const images = items.map(item => item.image).filter(Boolean);
   const price = first.price || Math.max(...items.map(item => item.price), 0);
-  return {
+  const payload = {
     nome: first.name, codigo: parentSku, preco: price, tipo: 'P', situacao: 'A', formato: 'V', marca: 'Puket',
     pesoLiquido: specs.pesoLiquido, pesoBruto: specs.pesoBruto, volumes: 1, itensPorCaixa: 1,
     tipoProducao: 'P', tipoEstoque: 'F', condicao: 0, freteGratis: false,
     categoria: { id: DEFAULT_CATEGORY_ID }, dimensoes: specs.dimensoes, tributacao: { ncm: DEFAULT_NCM },
     ...(first.description ? { descricaoComplementar: first.description } : {}),
     ...(images.length ? { midia: media(images) } : {}),
-    variacoes: items.map(item => variationPayload(item, first.name, price)),
   };
+  const inherited = inheritedVariationFields(payload);
+  payload.variacoes = items.map(item => variationPayload(item, first.name, price, inherited));
+  return payload;
 }
 
 function applyProductEdits(payload, edits = {}) {
@@ -195,9 +198,13 @@ function applyProductEdits(payload, edits = {}) {
   if (text(edits.ncm)) updated.tributacao = { ...(updated.tributacao || {}), ncm: text(edits.ncm) };
   if (Number.isInteger(Number(edits.categoryId)) && Number(edits.categoryId) > 0) updated.categoria = { id: Number(edits.categoryId) };
   if (Array.isArray(edits.images) && edits.images.length) updated.midia = media(edits.images.slice(0, 20));
-  if (edits.dimensions && typeof edits.dimensions === 'object') updated.dimensoes = { largura: number(edits.dimensions.width), altura: number(edits.dimensions.height), profundidade: number(edits.dimensions.depth), unidadeMedida: 1 };
+  if (edits.dimensions && typeof edits.dimensions === 'object') updated.dimensoes = { largura: number(edits.dimensions.width), altura: number(edits.dimensions.height), profundidade: number(edits.dimensions.depth), unidadeMedida: BLING_DIMENSION_UNIT_CENTIMETERS };
   if (Number(edits.netWeight) > 0) updated.pesoLiquido = Number(edits.netWeight);
   if (Number(edits.grossWeight) > 0) updated.pesoBruto = Number(edits.grossWeight);
+  if (Array.isArray(updated.variacoes)) {
+    const inherited = inheritedVariationFields(updated);
+    updated.variacoes = updated.variacoes.map(variation => ({ ...variation, ...inherited }));
+  }
   return updated;
 }
 
@@ -277,7 +284,9 @@ async function ensureProduct(group, deps, progress, updateContent = false, edits
     const hasEdits = Object.keys(edits || {}).length > 0;
     if (missing.length || updateContent || hasEdits) {
       const editableUpdate = applyProductEdits({}, edits);
-      const update = { ...detail, ...(updateContent ? payload : {}), ...editableUpdate, codigo: group.parentSku, variacoes: [...existing, ...missing] };
+      const update = { ...detail, ...(updateContent ? payload : {}), ...editableUpdate, codigo: group.parentSku };
+      const inheritedForVariations = inheritedVariationFields(update);
+      update.variacoes = [...existing, ...missing].map(variation => ({ ...variation, ...inheritedForVariations }));
       if (!edits.ncm && detail.tributacao) update.tributacao = detail.tributacao;
       if (!edits.categoryId && detail.categoria) update.categoria = detail.categoria;
       await deps.blingRequest('PUT', `/produtos/${parent.id}`, update);

@@ -158,6 +158,8 @@ async function testKitCreatesMissingComponentsFirst() {
   assert.equal(createdProducts.length, 2);
   assert(createdProducts.every(call => call.body.descricaoComplementar.startsWith('DESCRICAO CATALOGO')));
   assert(createdProducts.every(call => call.body.preco === 79.9 && call.body.tributacao.ncm && call.body.dimensoes && call.body.pesoLiquido));
+  assert(createdProducts.every(call => call.body.dimensoes.unidadeMedida === 2));
+  assert(createdProducts.every(call => call.body.variacoes.every(variation => variation.dimensoes.unidadeMedida === 2 && variation.pesoLiquido === call.body.pesoLiquido && variation.pesoBruto === call.body.pesoBruto)));
   assert(createdProducts.every(call => call.body.midia.imagens.imagensURL.length >= 2));
   assert.deepEqual(structure.body.componentes.map(item => item.produto.id), [111, 222]);
   assert.equal(result.createdComponents, 2); assert.equal(result.created, 1);
