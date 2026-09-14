@@ -233,13 +233,20 @@ function blingTokenRequest(bodyParams) {
 async function refreshBlingToken() {
   if (!blingTokens.refresh_token) throw new Error('Sem refresh_token. Autorize primeiro em /bling/auth');
   if (Date.now() < blingAuthBlockedUntil) {
+    if (blingAuthLastError.includes('error code: 1015')) {
+      const retryAt = new Date(blingAuthBlockedUntil).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      throw new Error(`O Bling bloqueou temporariamente a renovação por excesso de tentativas. Não tente novamente antes de ${retryAt}.`);
+    }
     throw new Error(`Falha recente ao renovar o Bling: ${blingAuthLastError}. Autorize novamente em /bling/auth.`);
   }
   if (blingRefreshPromise) return blingRefreshPromise;
   blingRefreshPromise = blingTokenRequest({ grant_type: 'refresh_token', refresh_token: blingTokens.refresh_token })
     .catch(error => {
       blingAuthLastError = String(error?.message || error || 'erro desconhecido');
-      blingAuthBlockedUntil = Date.now() + 60000;
+      // O Bling bloqueia o IP por 60 minutos quando o limite de /oauth/token
+      // é ultrapassado. A margem extra evita prolongar o bloqueio com testes.
+      const isOAuthRateLimit = blingAuthLastError.includes('error code: 1015');
+      blingAuthBlockedUntil = Date.now() + (isOAuthRateLimit ? 65 * 60 * 1000 : 60 * 1000);
       throw error;
     })
     .finally(() => { blingRefreshPromise = null; });
