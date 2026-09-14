@@ -170,6 +170,9 @@ const BLING_TOKENS_FILE = path.join(__dirname, 'bling_tokens.json');
 const BLING_WEBHOOK_SECRET = String(process.env.BLING_WEBHOOK_SECRET || BLING_CLIENT_SECRET || '').trim();
 
 let blingTokens = { access_token: null, refresh_token: null, expires_at: 0 };
+let blingRefreshPromise = null;
+let blingAuthBlockedUntil = 0;
+let blingAuthLastError = '';
 
 function loadBlingTokens() {
   try {
@@ -188,7 +191,7 @@ function blingTokenRequest(bodyParams) {
     const body = new URLSearchParams(bodyParams).toString();
     const auth = Buffer.from(BLING_CLIENT_ID + ':' + BLING_CLIENT_SECRET).toString('base64');
     const req = https.request({
-      hostname: 'www.bling.com.br',
+      hostname: 'api.bling.com.br',
       path: '/Api/v3/oauth/token',
       method: 'POST',
       headers: {
@@ -207,10 +210,16 @@ function blingTokenRequest(bodyParams) {
             blingTokens.access_token = json.access_token;
             blingTokens.refresh_token = json.refresh_token;
             blingTokens.expires_at = Date.now() + (json.expires_in * 1000) - 60000;
+            blingAuthBlockedUntil = 0;
+            blingAuthLastError = '';
             saveBlingTokens();
             resolve(json);
           } else {
-            reject(new Error(json.error_description || json.error || 'Token error'));
+            const tokenError = json.error_description
+              || (typeof json.error === 'string' ? json.error : json.error?.description || json.error?.message)
+              || json.message
+              || 'O Bling não retornou um token. Refaça a autorização OAuth.';
+            reject(new Error(tokenError));
           }
         } catch (e) { reject(new Error('Parse error: ' + data)); }
       });
@@ -223,7 +232,18 @@ function blingTokenRequest(bodyParams) {
 
 async function refreshBlingToken() {
   if (!blingTokens.refresh_token) throw new Error('Sem refresh_token. Autorize primeiro em /bling/auth');
-  return blingTokenRequest({ grant_type: 'refresh_token', refresh_token: blingTokens.refresh_token });
+  if (Date.now() < blingAuthBlockedUntil) {
+    throw new Error(`Falha recente ao renovar o Bling: ${blingAuthLastError}. Autorize novamente em /bling/auth.`);
+  }
+  if (blingRefreshPromise) return blingRefreshPromise;
+  blingRefreshPromise = blingTokenRequest({ grant_type: 'refresh_token', refresh_token: blingTokens.refresh_token })
+    .catch(error => {
+      blingAuthLastError = String(error?.message || error || 'erro desconhecido');
+      blingAuthBlockedUntil = Date.now() + 60000;
+      throw error;
+    })
+    .finally(() => { blingRefreshPromise = null; });
+  return blingRefreshPromise;
 }
 
 // ── Rate Limiter para Bling (max 3 req/s) ──
@@ -2591,47 +2611,52 @@ function handler(req, res) {
 
   if (reqPath === '/api/bling/verificar-lote' && req.method === 'POST') {
     readJsonBody(req).then(async (body) => {
-      const codigos = body.codigos || [];
-      const resultados = {};
+      const codigos = [...new Set((Array.isArray(body.codigos) ? body.codigos : [])
+        .map(codigo => String(codigo || '').trim())
+        .filter(Boolean))].slice(0, 50);
+      const resultados = Object.fromEntries(codigos.map(codigo => [codigo, { existe: false }]));
       res.writeHead(200, { 'Content-Type': 'application/json' });
 
-      for (const cod of codigos) {
-        try {
-          let prodBasico;
-          try {
-            prodBasico = await buscarProdutoBlingExato(cod);
-          } catch (e1) {
-            // 500 do Bling: aguarda 1s e tenta mais uma vez
-            const isServerError = e1.message && e1.message.includes('"status":500');
-            if (isServerError) {
-              console.log(`[Bling] 500 em "${cod}", retentando...`);
-              await new Promise(res => setTimeout(res, 1000));
-              prodBasico = await buscarProdutoBlingExato(cod);
-            } else {
-              throw e1;
-            }
-          }
+      if (!codigos.length) {
+        res.end(JSON.stringify(resultados));
+        return;
+      }
 
-          if (prodBasico) {
-            // Busca detalhes completos do produto para pegar as variacoes (IDs dos filhos)
-            let variacoes = [];
-            try {
-              const rFull = await blingRequest('GET', `/produtos/${prodBasico.id}`);
-              variacoes = rFull.data?.data?.variacoes || [];
-            } catch (eVar) {
-              // ignora se não conseguir buscar variações
-            }
-            resultados[cod] = {
-              existe: true,
-              id: prodBasico.id,
-              data: { ...prodBasico, variacoes }
-            };
-          } else {
-            resultados[cod] = { existe: false };
-          }
+      const produtosPorId = new Map();
+      const consultarLote = async (campo, valores) => {
+        if (!valores.length) return { ok: true, error: '' };
+        const filtros = valores.map(valor => `${campo}[]=${encodeURIComponent(valor)}`).join('&');
+        try {
+          const resposta = await blingRequest('GET', `/produtos?${filtros}&pagina=1&limite=100`);
+          const produtos = Array.isArray(resposta.data?.data) ? resposta.data.data : [];
+          for (const produto of produtos) produtosPorId.set(String(produto.id), produto);
+          return { ok: true, error: '' };
         } catch (e) {
-          console.error(`[Bling] Erro ao verificar "${cod}":`, e.message);
-          resultados[cod] = { existe: false, error: e.message };
+          return { ok: false, error: String(e?.message || e) };
+        }
+      };
+
+      // Duas chamadas por página do catálogo: uma para SKU e outra para GTIN.
+      // Antes, eram feitas até três chamadas para cada produto.
+      const consultaCodigos = await consultarLote('codigos', codigos);
+      const consultaGtins = await consultarLote('gtins', codigos.filter(codigo => /^\d{8,14}$/.test(codigo)));
+
+      for (const produto of produtosPorId.values()) {
+        const identificadores = [produto.codigo, produto.gtin, produto.gtinTributario]
+          .map(valor => String(valor || '').trim())
+          .filter(Boolean);
+        for (const codigo of codigos) {
+          if (!identificadores.includes(codigo)) continue;
+          resultados[codigo] = { existe: true, id: produto.id, data: produto };
+        }
+      }
+
+      for (const codigo of codigos) {
+        if (resultados[codigo].existe) continue;
+        const temConsultaAlternativa = /^\d{8,14}$/.test(codigo);
+        const nenhumaConsultaValida = !consultaCodigos.ok && (!temConsultaAlternativa || !consultaGtins.ok);
+        if (nenhumaConsultaValida) {
+          resultados[codigo] = { existe: false, error: consultaCodigos.error || consultaGtins.error || 'Falha ao consultar o Bling' };
         }
       }
       res.end(JSON.stringify(resultados));
