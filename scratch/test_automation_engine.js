@@ -131,9 +131,6 @@ async function testApprovedEditsReachBling() {
   assert.equal(update.nome, 'NOVO NOME'); assert.equal(update.descricaoComplementar, 'Nova descricao'); assert.equal(update.preco, 129.9);
   assert.equal(update.tributacao.ncm, '6108.31.00'); assert.equal(update.categoria.id, 88); assert.equal(update.ignored, undefined);
   assert.deepEqual(update.midia.imagens.imagensURL.map(item => item.link), ['https://img.test/principal.png', 'https://img.test/segunda.png']);
-  const childUpdate = calls.find(call => call.method === 'PUT' && call.path === '/produtos/61').body;
-  assert(['https://img.test/principal.png', 'https://img.test/segunda.png'].every(link => childUpdate.midia.imagens.imagensURL.some(item => item.link === link)));
-  assert.equal(childUpdate.dimensoes.unidadeMedida, 2); assert.equal(childUpdate.pesoLiquido, .3); assert.equal(childUpdate.pesoBruto, .3);
 }
 
 async function testKitCreatesMissingComponentsFirst() {
@@ -162,7 +159,6 @@ async function testKitCreatesMissingComponentsFirst() {
   const result = await executeAutomation({ operation: 'criar-kit', sku: '111111111_222222222' }, deps);
   const kit = calls.find(call => call.method === 'POST' && call.path === '/produtos' && call.body.formato === 'E');
   const createdProducts = calls.filter(call => call.method === 'POST' && call.path === '/produtos' && call.body.formato === 'V');
-  const updatedChildren = calls.filter(call => call.method === 'PUT' && /^\/produtos\/(111|222)$/.test(call.path));
   const structure = calls.find(call => call.method === 'PUT' && call.path === '/produtos/estruturas/303');
   assert.equal(createdProducts.length, 2);
   assert(createdProducts.every(call => call.body.descricaoComplementar.startsWith('DESCRICAO CATALOGO')));
@@ -170,7 +166,6 @@ async function testKitCreatesMissingComponentsFirst() {
   assert(createdProducts.every(call => call.body.dimensoes.unidadeMedida === 2));
   assert(createdProducts.every(call => call.body.variacoes.every(variation => variation.dimensoes.unidadeMedida === 2 && variation.pesoLiquido === call.body.pesoLiquido && variation.pesoBruto === call.body.pesoBruto)));
   assert(createdProducts.every(call => call.body.midia.imagens.imagensURL.length >= 2));
-  assert(updatedChildren.every(call => call.body.midia.imagens.imagensURL.length >= 2));
   assert.deepEqual(structure.body.componentes.map(item => item.produto.id), [111, 222]);
   assert.equal(result.createdComponents, 2); assert.equal(result.created, 1);
   assert(calls.some(call => call.method === 'PUT' && call.path === '/produtos/estruturas/303'));

@@ -145,27 +145,11 @@ async function findBlingExact(blingRequest, sku) {
 
 function inheritedVariationFields(parent) {
   const fields = {};
-  for (const key of ['categoria', 'fornecedor', 'unidade', 'marca', 'tipoProducao', 'tipoEstoque', 'condicao', 'freteGratis', 'volumes', 'itensPorCaixa', 'pesoLiquido', 'pesoBruto', 'dimensoes', 'descricaoComplementar', 'midia']) {
+  for (const key of ['categoria', 'fornecedor', 'unidade', 'marca', 'tipoProducao', 'tipoEstoque', 'condicao', 'freteGratis', 'volumes', 'itensPorCaixa', 'pesoLiquido', 'pesoBruto', 'dimensoes', 'descricaoComplementar']) {
     if (parent?.[key] !== undefined && parent[key] !== null && parent[key] !== '') fields[key] = parent[key];
   }
   if (parent?.tributacao && typeof parent.tributacao === 'object') fields.tributacao = { ...parent.tributacao };
   return fields;
-}
-
-async function syncVariationDetails(group, parentId, parentPayloadValue, deps) {
-  const response = await deps.blingRequest('GET', `/produtos/${parentId}`);
-  const detail = response.data?.data || response.data;
-  const variations = Array.isArray(detail?.variacoes) ? detail.variacoes : [];
-  const inherited = inheritedVariationFields(parentPayloadValue);
-  const fallbackName = text(parentPayloadValue.nome || group.items[0]?.name);
-  const fallbackPrice = number(parentPayloadValue.preco) || number(group.items[0]?.price);
-
-  for (const item of group.items) {
-    const { variation } = resolveVariation(item, variations);
-    if (!variation?.id) throw Object.assign(new Error(`Não foi possível aplicar imagens e medidas na variação ${item.childSku}: o Bling não retornou seu ID.`), { step: 'gravando' });
-    const body = variationPayload(item, fallbackName, fallbackPrice, inherited);
-    await deps.blingRequest('PUT', `/produtos/${variation.id}`, body);
-  }
 }
 
 function variationPayload(item, fallbackName, fallbackPrice, inherited = {}) {
@@ -284,7 +268,6 @@ async function ensureProduct(group, deps, progress, updateContent = false, edits
   const payload = applyProductEdits(parentPayload(group.parentSku, group.items), edits);
   let created = 0;
   let existingCount = 0;
-  let shouldSyncVariations = false;
   const warnings = [];
   if (!parent) {
     for (const item of group.items) {
@@ -298,7 +281,6 @@ async function ensureProduct(group, deps, progress, updateContent = false, edits
     const response = await deps.blingRequest('POST', '/produtos', payload);
     parent = response.data?.data || response.data;
     created = group.items.length;
-    shouldSyncVariations = true;
   } else {
     const detailResponse = await deps.blingRequest('GET', `/produtos/${parent.id}`);
     const detail = detailResponse.data?.data || detailResponse.data;
@@ -322,12 +304,7 @@ async function ensureProduct(group, deps, progress, updateContent = false, edits
       if (!edits.ncm && detail.tributacao) update.tributacao = detail.tributacao;
       if (!edits.categoryId && detail.categoria) update.categoria = detail.categoria;
       await deps.blingRequest('PUT', `/produtos/${parent.id}`, update);
-      shouldSyncVariations = true;
     }
-  }
-  if (shouldSyncVariations) {
-    if (!parent?.id) throw Object.assign(new Error('O Bling não retornou o ID do produto-pai para atualizar as variações.'), { step: 'gravando' });
-    await syncVariationDetails(group, parent.id, payload, deps);
   }
   progress('gravando', 'done');
   return { parent, created, existingCount, warnings };
