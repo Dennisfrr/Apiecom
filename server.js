@@ -313,7 +313,11 @@ function blingRequest(method, apiPath, body) {
           } else if (res.statusCode === 401) {
             reject(new Error('TOKEN_EXPIRED'));
           } else {
-            reject(new Error(JSON.stringify({ status: res.statusCode, body: parsed })));
+            const error = new Error(JSON.stringify({ status: res.statusCode, body: parsed }));
+            error.statusCode = res.statusCode;
+            error.apiPath = apiPath;
+            error.method = method;
+            reject(error);
           }
         });
       });
@@ -323,7 +327,9 @@ function blingRequest(method, apiPath, body) {
     });
     let tokenRefreshed = false;
     let rateLimitAttempt = 0;
+    let gatewayAttempt = 0;
     const rateLimitDelays = [5000, 10000, 20000];
+    const gatewayDelays = [2000, 5000];
     for (;;) {
       try {
         return await execute();
@@ -332,6 +338,13 @@ function blingRequest(method, apiPath, body) {
           tokenRefreshed = true;
           console.log('[Bling] API respondeu 401; renovando token e repetindo a requisição uma vez...');
           await refreshBlingToken();
+          continue;
+        }
+        const safeToRetry = ['GET', 'PUT', 'PATCH'].includes(method);
+        if (safeToRetry && [502, 503, 504].includes(Number(error.statusCode)) && gatewayAttempt < gatewayDelays.length) {
+          const delay = gatewayDelays[gatewayAttempt++];
+          console.warn(`[Bling] Falha temporária ${error.statusCode} em ${method} ${apiPath}. Nova tentativa em ${delay / 1000}s (${gatewayAttempt}/${gatewayDelays.length}).`);
+          await new Promise(resolve => setTimeout(resolve, delay));
           continue;
         }
         if (!isBlingRateLimitError(error) || rateLimitAttempt >= rateLimitDelays.length) throw error;

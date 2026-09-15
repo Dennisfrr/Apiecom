@@ -36,6 +36,14 @@ function blingImages(product) {
     ...imageUrls(product?.midia?.imagens?.imagensURL),
   ].filter(Boolean))];
 }
+function isBlingHostedImage(url) {
+  try {
+    const hostname = new URL(text(url)).hostname.toLowerCase();
+    return hostname === 'orgbling.s3.amazonaws.com' || hostname.endsWith('.bling.com.br');
+  } catch (_) {
+    return false;
+  }
+}
 function composeDescriptions(catalogDescription, linxDescription) {
   const catalog = text(catalogDescription);
   const linx = text(linxDescription);
@@ -214,7 +222,12 @@ function applyProductEdits(payload, edits = {}) {
   if (typeof edits.description === 'string') updated.descricaoComplementar = edits.description.trim().slice(0, 10000);
   if (text(edits.ncm)) updated.tributacao = { ...(updated.tributacao || {}), ncm: text(edits.ncm) };
   if (Number.isInteger(Number(edits.categoryId)) && Number(edits.categoryId) > 0) updated.categoria = { id: Number(edits.categoryId) };
-  if (Array.isArray(edits.images) && edits.images.length) updated.midia = media(edits.images.slice(0, 20));
+  if (Array.isArray(edits.images) && edits.images.length) {
+    // URLs devolvidas pelo próprio Bling são assinadas e temporárias. Reenviá-las
+    // faz o Bling baixar novamente as mesmas fotos e pode causar galerias crescentes/504.
+    const sourceImages = [...new Set(edits.images.map(value => text(value)).filter(value => /^https?:\/\//i.test(value) && !isBlingHostedImage(value)))].slice(0, 20);
+    if (sourceImages.length) updated.midia = media(sourceImages);
+  }
   if (edits.dimensions && typeof edits.dimensions === 'object') updated.dimensoes = { largura: number(edits.dimensions.width), altura: number(edits.dimensions.height), profundidade: number(edits.dimensions.depth), unidadeMedida: BLING_DIMENSION_UNIT_CENTIMETERS };
   if (Number(edits.netWeight) > 0) updated.pesoLiquido = Number(edits.netWeight);
   if (Number(edits.grossWeight) > 0) updated.pesoBruto = Number(edits.grossWeight);
