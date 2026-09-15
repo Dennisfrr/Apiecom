@@ -2629,6 +2629,14 @@ function handler(req, res) {
         return;
       }
 
+      // O catálogo identifica o produto por 12 dígitos (base + cor), enquanto
+      // o produto-pai criado no Bling usa somente a referência-base de 9 dígitos.
+      const candidatosPorCodigo = new Map(codigos.map(codigo => [codigo, [...new Set([
+        codigo,
+        ...(/^\d{12}$/.test(codigo) ? [codigo.slice(0, 9)] : []),
+      ])]]));
+      const codigosParaConsulta = [...new Set([...candidatosPorCodigo.values()].flat())];
+
       const produtosPorId = new Map();
       const consultarLote = async (campo, valores) => {
         if (!valores.length) return { ok: true, error: '' };
@@ -2645,7 +2653,7 @@ function handler(req, res) {
 
       // Duas chamadas por página do catálogo: uma para SKU e outra para GTIN.
       // Antes, eram feitas até três chamadas para cada produto.
-      const consultaCodigos = await consultarLote('codigos', codigos);
+      const consultaCodigos = await consultarLote('codigos', codigosParaConsulta);
       const consultaGtins = await consultarLote('gtins', codigos.filter(codigo => /^\d{8,14}$/.test(codigo)));
 
       for (const produto of produtosPorId.values()) {
@@ -2653,7 +2661,7 @@ function handler(req, res) {
           .map(valor => String(valor || '').trim())
           .filter(Boolean);
         for (const codigo of codigos) {
-          if (!identificadores.includes(codigo)) continue;
+          if (!candidatosPorCodigo.get(codigo).some(candidato => identificadores.includes(candidato))) continue;
           resultados[codigo] = { existe: true, id: produto.id, data: produto };
         }
       }
