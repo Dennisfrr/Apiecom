@@ -12,6 +12,7 @@ async function testNewProduct() {
     if (method === 'GET' && path.startsWith('/produtos?')) return { data: { data: [] } };
     if (method === 'POST' && path === '/produtos') return { data: { data: { id: 10 } } };
     if (method === 'GET' && path === '/produtos/10') return { data: { data: { id: 10, codigo: '030402879', variacoes: [{ id: 11, codigo: '030402879_ROSA_2', gtin: '7900000000001' }] } } };
+    if (method === 'PUT' && path === '/produtos/11') return { data: { data: {} } };
     if (method === 'POST' && path === '/estoques') return { data: { data: {} } };
     throw new Error(`Chamada inesperada: ${method} ${path}`);
   });
@@ -40,6 +41,7 @@ async function testBarcodeExpandsToFullVariationGrid() {
         { id: 72, codigo: '030402879_ROSA_4', gtin: '7900000000002' },
         { id: 73, codigo: '030402879_ROSA_6', gtin: '7900000000003' },
       ] } } };
+      if (method === 'PUT' && /^\/produtos\/(71|72|73)$/.test(path)) return { data: { data: {} } };
       if (method === 'POST' && path === '/estoques') return { data: { data: {} } };
       throw new Error(`Chamada inesperada: ${method} ${path}`);
     },
@@ -84,6 +86,7 @@ async function testMissingVariationInheritsParentFiscalData() {
       return { data: { data: { id: 40, variacoes: [{ id: 41, codigo: '030402879_ROSA_2', gtin: '7900000000001' }] } } };
     }
     if (method === 'PUT' && path === '/produtos/40') return { data: { data: {} } };
+    if (method === 'PUT' && path === '/produtos/41') return { data: { data: {} } };
     if (method === 'POST' && path === '/estoques') return { data: { data: {} } };
     throw new Error(`Chamada inesperada: ${method} ${path}`);
   });
@@ -119,6 +122,7 @@ async function testApprovedEditsReachBling() {
       return { data: { data: { id: 60, variacoes: [{ id: 61, codigo: '030402879_ROSA_2', gtin: '7900000000001' }] } } };
     }
     if (method === 'PUT' && path === '/produtos/60') return { data: { data: {} } };
+    if (method === 'PUT' && path === '/produtos/61') return { data: { data: {} } };
     if (method === 'POST' && path === '/estoques') return { data: { data: {} } };
     throw new Error(`Chamada inesperada: ${method} ${path}`);
   });
@@ -127,6 +131,9 @@ async function testApprovedEditsReachBling() {
   assert.equal(update.nome, 'NOVO NOME'); assert.equal(update.descricaoComplementar, 'Nova descricao'); assert.equal(update.preco, 129.9);
   assert.equal(update.tributacao.ncm, '6108.31.00'); assert.equal(update.categoria.id, 88); assert.equal(update.ignored, undefined);
   assert.deepEqual(update.midia.imagens.imagensURL.map(item => item.link), ['https://img.test/principal.png', 'https://img.test/segunda.png']);
+  const childUpdate = calls.find(call => call.method === 'PUT' && call.path === '/produtos/61').body;
+  assert(['https://img.test/principal.png', 'https://img.test/segunda.png'].every(link => childUpdate.midia.imagens.imagensURL.some(item => item.link === link)));
+  assert.equal(childUpdate.dimensoes.unidadeMedida, 2); assert.equal(childUpdate.pesoLiquido, .3); assert.equal(childUpdate.pesoBruto, .3);
 }
 
 async function testKitCreatesMissingComponentsFirst() {
@@ -144,6 +151,7 @@ async function testKitCreatesMissingComponentsFirst() {
         const entry = Object.values(componentIds).find(value => String(value.parent) === path.split('/').pop());
         return { data: { data: { id: entry.parent, variacoes: [{ id: entry.variation, codigo: path.includes('101') ? '111111111_AZUL_UN' : '222222222_AZUL_UN', gtin: path.includes('101') ? '789111111111' : '789222222222' }] } } };
       }
+      if (method === 'PUT' && /^\/produtos\/(111|222)$/.test(path)) return { data: { data: {} } };
       if (method === 'POST' && path === '/estoques') return { data: { data: {} } };
       if (method === 'POST' && path === '/produtos' && body.formato === 'E') return { data: { data: { id: 303 } } };
       if (method === 'PUT' && path === '/produtos/estruturas/303') return { data: null };
@@ -154,6 +162,7 @@ async function testKitCreatesMissingComponentsFirst() {
   const result = await executeAutomation({ operation: 'criar-kit', sku: '111111111_222222222' }, deps);
   const kit = calls.find(call => call.method === 'POST' && call.path === '/produtos' && call.body.formato === 'E');
   const createdProducts = calls.filter(call => call.method === 'POST' && call.path === '/produtos' && call.body.formato === 'V');
+  const updatedChildren = calls.filter(call => call.method === 'PUT' && /^\/produtos\/(111|222)$/.test(call.path));
   const structure = calls.find(call => call.method === 'PUT' && call.path === '/produtos/estruturas/303');
   assert.equal(createdProducts.length, 2);
   assert(createdProducts.every(call => call.body.descricaoComplementar.startsWith('DESCRICAO CATALOGO')));
@@ -161,6 +170,7 @@ async function testKitCreatesMissingComponentsFirst() {
   assert(createdProducts.every(call => call.body.dimensoes.unidadeMedida === 2));
   assert(createdProducts.every(call => call.body.variacoes.every(variation => variation.dimensoes.unidadeMedida === 2 && variation.pesoLiquido === call.body.pesoLiquido && variation.pesoBruto === call.body.pesoBruto)));
   assert(createdProducts.every(call => call.body.midia.imagens.imagensURL.length >= 2));
+  assert(updatedChildren.every(call => call.body.midia.imagens.imagensURL.length >= 2));
   assert.deepEqual(structure.body.componentes.map(item => item.produto.id), [111, 222]);
   assert.equal(result.createdComponents, 2); assert.equal(result.created, 1);
   assert(calls.some(call => call.method === 'PUT' && call.path === '/produtos/estruturas/303'));
