@@ -2692,6 +2692,41 @@ function handler(req, res) {
         }
       }
 
+      // A consulta detalhada só acontece após o clique do usuário. Ela alimenta
+      // os indicadores de saúde e marketplace sem consumir a API durante a busca.
+      for (const codigo of codigos) {
+        const resultado = resultados[codigo];
+        if (!resultado.existe || !resultado.id) continue;
+        try {
+          const [detalheResposta, lojasResposta] = await Promise.all([
+            blingRequest('GET', `/produtos/${resultado.id}`),
+            blingRequest('GET', `/produtos/lojas?idProduto=${resultado.id}&pagina=1&limite=100`),
+          ]);
+          const detalhe = detalheResposta.data?.data || detalheResposta.data || {};
+          const imagens = detalhe.midia?.imagens || {};
+          const quantidadeImagens = [imagens.externas, imagens.internas, imagens.imagensURL]
+            .filter(Array.isArray)
+            .reduce((total, lista) => total + lista.length, 0);
+          const dimensoes = detalhe.dimensoes || {};
+          const pendencias = [];
+          if (!String(detalhe.nome || '').trim()) pendencias.push('Nome ausente');
+          if (!String(detalhe.descricaoComplementar || detalhe.descricaoCurta || '').trim()) pendencias.push('Sem descrição');
+          if (!quantidadeImagens) pendencias.push('Sem imagens');
+          if (!(Number(detalhe.preco) > 0)) pendencias.push('Preço inválido');
+          if (!String(detalhe.tributacao?.ncm || '').trim()) pendencias.push('Sem NCM');
+          if (![dimensoes.largura, dimensoes.altura, dimensoes.profundidade].every(valor => Number(valor) > 0)) pendencias.push('Sem dimensões');
+          if (!(Number(detalhe.pesoLiquido) > 0) || !(Number(detalhe.pesoBruto) > 0)) pendencias.push('Sem peso');
+          if (detalhe.formato === 'V' && !(Array.isArray(detalhe.variacoes) && detalhe.variacoes.length)) pendencias.push('Sem variações');
+          const vinculos = Array.isArray(lojasResposta.data?.data) ? lojasResposta.data.data : [];
+          resultado.data = detalhe;
+          resultado.saude = { completa: pendencias.length === 0, pendencias, imagens: quantidadeImagens };
+          resultado.marketplaces = { vinculado: vinculos.length > 0, quantidade: vinculos.length, lojas: vinculos.map(vinculo => ({ id: vinculo.loja?.id || vinculo.idLoja || null, codigo: vinculo.codigo || vinculo.codigoProdutoLoja || '' })) };
+        } catch (e) {
+          resultado.saude = { completa: false, pendencias: ['Não foi possível conferir os detalhes'], imagens: 0, error: String(e?.message || e) };
+          resultado.marketplaces = { vinculado: false, quantidade: 0, lojas: [] };
+        }
+      }
+
       for (const codigo of codigos) {
         if (resultados[codigo].existe) continue;
         const temConsultaAlternativa = /^\d{8,14}$/.test(codigo);
