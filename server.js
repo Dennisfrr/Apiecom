@@ -2978,8 +2978,28 @@ A descrição deve:
     return;
   }
 
-  // Em produção o frontend fica no Lovable. Não exponha arquivos locais do
-  // backend (tokens, banco, logs ou .env) como conteúdo estático.
+  // As telas legadas continuam disponíveis por rotas explícitas, inclusive no
+  // servidor do túnel. A lista fechada evita expor tokens, banco, logs ou .env.
+  const legacyPages = {
+    '/dashboard': 'dashboard.html',
+    '/inteligencia': 'inteligencia.html',
+    '/ofertas': 'ofertas.html',
+  };
+  if (req.method === 'GET' && legacyPages[reqPath]) {
+    fs.readFile(path.join(ROOT, legacyPages[reqPath]), (err, data) => {
+      if (err) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Tela não encontrada.');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(data);
+    });
+    return;
+  }
+
+  // Em produção o frontend fica no Lovable. Não exponha outros arquivos locais
+  // do backend (tokens, banco, logs ou .env) como conteúdo estático.
   if (!SERVE_FRONTEND) {
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Endpoint não encontrado.' }));
