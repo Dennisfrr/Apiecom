@@ -15,6 +15,19 @@ const { BlingEventStore } = require('./bling-event-store');
 const { GroupSalesStore } = require('./group-sales-store');
 const { GroupSalesEngine } = require('./group-sales-engine');
 const { executeAutomation, previewAutomation } = require('./automation-engine');
+const { analyzeUnusedProducts } = require('./unused-products-service');
+
+const unusedProductJobs = new Map();
+
+function startUnusedProductJob(days) {
+  const id = crypto.randomUUID();
+  const job = { id, status: 'processing', progress: { stage: 'starting', message: 'Preparando análise…', current: 0 }, result: null, error: null };
+  unusedProductJobs.set(id, job);
+  analyzeUnusedProducts({ blingRequest, days, progress: value => { job.progress = value; } })
+    .then(result => { job.status = 'done'; job.result = result; })
+    .catch(error => { job.status = 'error'; job.error = String(error?.message || error); });
+  return job;
+}
 
 // Credenciais externas são configuradas no ambiente (localmente pelo .env e,
 // em produção, pelo painel da hospedagem). Nunca coloque chaves neste arquivo.
@@ -2689,6 +2702,31 @@ function handler(req, res) {
       }
       res.end(JSON.stringify(resultados));
     });
+    return;
+  }
+
+  if (reqPath === '/api/bling/produtos-parados' && req.method === 'POST') {
+    readJsonBody(req).then(body => {
+      const job = startUnusedProductJob(body.days);
+      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ id: job.id, status: job.status }));
+    }).catch(error => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message }));
+    });
+    return;
+  }
+
+  if (reqPath.startsWith('/api/bling/produtos-parados/') && req.method === 'GET') {
+    const id = reqPath.split('/').pop();
+    const job = unusedProductJobs.get(id);
+    if (!job) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Análise não encontrada.' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(job));
     return;
   }
 
