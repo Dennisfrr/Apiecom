@@ -426,9 +426,20 @@ const MIME = {
   '.js': 'application/javascript',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
   '.json': 'application/json',
   '.ico': 'image/x-icon',
 };
+const CUSTOM_IMAGE_UPLOAD_DIR = path.join(ROOT, 'uploads');
+const PUBLIC_API_BASE_URL = String(process.env.PUBLIC_API_URL || process.env.API_PUBLIC_URL || 'https://api.ellentozzi.com.br').replace(/\/$/, '');
+
+function customImageType(buffer) {
+  if (buffer.subarray(0, 3).equals(Buffer.from([0xFF, 0xD8, 0xFF]))) return { extension: 'jpg', mime: 'image/jpeg' };
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]))) return { extension: 'png', mime: 'image/png' };
+  if (buffer.subarray(0, 12).toString('ascii', 0, 4) === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return { extension: 'webp', mime: 'image/webp' };
+  return null;
+}
 
 // ── Estado Global do Inventário ──
 const DB_FILE = path.join(ROOT, 'database.json');
@@ -1426,6 +1437,24 @@ function handler(req, res) {
     return;
   }
 
+  // Arquivos escolhidos manualmente na revisão do kit. As URLs são públicas
+  // para que o Bling consiga baixar a foto ao criar ou atualizar o produto.
+  const customImageMatch = reqPath.match(/^\/uploads\/([a-f0-9-]+\.(?:jpg|png|webp))$/i);
+  if (req.method === 'GET' && customImageMatch) {
+    const filename = customImageMatch[1];
+    const filePath = path.join(CUSTOM_IMAGE_UPLOAD_DIR, filename);
+    fs.readFile(filePath, (error, data) => {
+      if (error) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Imagem não encontrada.' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': MIME[path.extname(filename).toLowerCase()] || 'application/octet-stream', 'Cache-Control': 'public, max-age=31536000, immutable' });
+      res.end(data);
+    });
+    return;
+  }
+
   if (reqPath.startsWith('/api/') && req.headers.origin && !corsOrigin) {
     res.writeHead(403, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Origem não autorizada.' }));
@@ -1465,6 +1494,31 @@ function handler(req, res) {
     try { return JSON.parse(body || '{}'); }
     catch (e) { throw e; }
   });
+
+  if (reqPath === '/api/uploads/imagens' && req.method === 'POST') {
+    if (!req.headers.origin || !corsOrigin) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Origem não autorizada para envio de imagem.' }));
+      return;
+    }
+    readRawBody(req, 11 * 1024 * 1024).then(raw => {
+      const body = JSON.parse(raw.toString('utf8') || '{}');
+      const encoded = String(body.dataUrl || '').replace(/^data:image\/(?:jpeg|jpg|png|webp);base64,/i, '');
+      const image = Buffer.from(encoded, 'base64');
+      if (!encoded || !image.length || image.length > 8 * 1024 * 1024) throw new Error('Envie uma imagem de até 8 MB.');
+      const detected = customImageType(image);
+      if (!detected) throw new Error('Formato inválido. Use JPG, PNG ou WEBP.');
+      fs.mkdirSync(CUSTOM_IMAGE_UPLOAD_DIR, { recursive: true });
+      const filename = `${crypto.randomUUID()}.${detected.extension}`;
+      fs.writeFileSync(path.join(CUSTOM_IMAGE_UPLOAD_DIR, filename), image, { flag: 'wx' });
+      res.writeHead(201, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ url: `${PUBLIC_API_BASE_URL}/uploads/${filename}`, mime: detected.mime }));
+    }).catch(error => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message || 'Não foi possível enviar a imagem.' }));
+    });
+    return;
+  }
 
   if (reqPath === '/api/integracoes/status' && req.method === 'GET') {
     Promise.allSettled([
