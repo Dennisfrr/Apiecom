@@ -1049,6 +1049,33 @@ async function gerarDescricaoSeoProduto(dados) {
   return String(resposta || '').replace(/^```(?:text)?\s*|\s*```$/gi, '').trim().slice(0, 5000);
 }
 
+async function gerarTituloKitSeo(dados) {
+  const tituloAtual = String(dados.nomeAtual || '').trim().slice(0, 180);
+  const componentes = Array.isArray(dados.componentes)
+    ? dados.componentes.map(item => String(item || '').trim().slice(0, 140)).filter(Boolean).slice(0, 12)
+    : [];
+  if (!componentes.length && !tituloAtual) throw new Error('Informe ao menos um componente do kit.');
+  const fonte = componentes.length ? componentes.map(item => `• ${item}`).join('\n') : `• ${tituloAtual}`;
+  const resposta = await consultarDeepSeek([
+    {
+      role: 'system',
+      content: 'Você cria títulos de produto para a marca Puket. Use somente fatos que apareçam literalmente nos nomes dos componentes enviados. Não invente cor, material, tamanho, público, personagem, coleção, benefício ou quantidade. Não use emojis, hashtags, aspas, Markdown nem explicações.',
+    },
+    {
+      role: 'user',
+      content: `Crie SOMENTE um título em CAIXA ALTA para um kit. Siga rigorosamente o formato: KIT - [DESCRIÇÃO OBJETIVA DO KIT] PUKET. "PUKET" deve ser a última palavra. Mantenha os nomes úteis dos componentes, elimine repetições e conecte itens com " + " quando couber. Máximo de 120 caracteres. Não inclua ponto final ou qualquer texto além do título.\n\nComponentes confiáveis:\n${fonte}`,
+    },
+  ], { maxTokens: 180, thinking: 'disabled' });
+  const titulo = String(resposta || '')
+    .replace(/^```(?:text)?\s*|\s*```$/gi, '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/["“”]/g, '')
+    .trim()
+    .slice(0, 120);
+  if (!titulo) throw new Error('A IA não retornou um título válido.');
+  return titulo;
+}
+
 loadDB();
 
 // ── Dicionário de Cores ──
@@ -2351,6 +2378,31 @@ function handler(req, res) {
         console.error('[DESCRICAO-SEO] Erro:', erro.message);
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: `Não foi possível gerar a descrição: ${erro.message}` }));
+      }
+    }).catch(erro => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Dados inválidos: ' + erro.message }));
+    });
+    return;
+  }
+
+  // Sugere um título de kit para revisão. A IA não altera cadastro algum e
+  // recebe somente os nomes dos componentes que já fazem parte do kit.
+  if (reqPath === '/api/titulo-kit-ia' && req.method === 'POST') {
+    readJsonBody(req).then(async (body) => {
+      if (!obterChaveDeepSeek()) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'A geração por IA ainda não foi configurada no servidor.' }));
+        return;
+      }
+      try {
+        const titulo = await gerarTituloKitSeo(body || {});
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ titulo }));
+      } catch (erro) {
+        console.error('[TITULO-KIT-IA] Erro:', erro.message);
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Não foi possível gerar o título: ${erro.message}` }));
       }
     }).catch(erro => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
