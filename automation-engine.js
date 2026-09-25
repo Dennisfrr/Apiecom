@@ -213,7 +213,7 @@ function parentPayload(parentSku, items) {
   const payload = {
     nome: first.name, codigo: parentSku, preco: price, tipo: 'P', situacao: 'A', formato: 'V', marca: 'Puket',
     pesoLiquido: specs.pesoLiquido, pesoBruto: specs.pesoBruto, volumes: 1, itensPorCaixa: 1,
-    tipoProducao: 'P', tipoEstoque: 'F', condicao: 0, freteGratis: false,
+    unidade: 'UN', tipoProducao: 'P', tipoEstoque: 'F', condicao: 0, freteGratis: false,
     categoria: { id: DEFAULT_CATEGORY_ID }, dimensoes: specs.dimensoes, tributacao: { ncm: DEFAULT_NCM },
     ...(first.description ? { descricaoComplementar: first.description } : {}),
     ...(images.length ? { midia: media(images) } : {}),
@@ -370,10 +370,17 @@ async function createKit(sku, deps, progress, edits = {}) {
   for (const componentSku of componentSkus) {
     const group = await loadGroup(componentSku, deps, () => {});
     const local = group.items.find(item => item.base === componentSku || item.childSku === componentSku || item.barcode === componentSku) || group.items[0];
+    // Cada componente contribui com sua galeria completa do catálogo. Antes o
+    // kit recebia apenas a imagem principal (_1) de cada item.
+    const componentCatalog = await catalogContent(group, componentSku, deps);
+    const componentImages = [...new Set([...componentCatalog.images, local.image].filter(Boolean))].slice(0, 20);
     let found = await findBlingExact(deps.blingRequest, local.childSku) || await findBlingExact(deps.blingRequest, componentSku);
     if (!found) {
       const automaticEdits = await automaticProductEdits(group, componentSku, deps);
-      const ensured = await ensureProduct(group, deps, () => {}, true, automaticEdits);
+      const ensured = await ensureProduct(group, deps, () => {}, true, {
+        ...automaticEdits,
+        images: [...new Set([...componentImages, ...automaticEdits.images])].slice(0, 20),
+      });
       createdComponents += ensured.created > 0 ? 1 : 0;
       componentWarnings.push(...ensured.warnings);
       if (!ensured.parent?.id) throw Object.assign(new Error(`O produto-base do componente ${componentSku} foi criado sem identificação no Bling.`), { step: 'bling' });
@@ -385,7 +392,7 @@ async function createKit(sku, deps, progress, edits = {}) {
       found = resolveVariation(local, Array.isArray(detail?.variacoes) ? detail.variacoes : []).variation;
     }
     if (!found?.id) throw Object.assign(new Error(`Não foi possível identificar o componente ${componentSku} no Bling após o cadastro.`), { step: 'bling' });
-    components.push({ local, bling: found });
+    components.push({ local, images: componentImages, bling: found });
   }
   progress('linx', 'done'); progress('produto', 'done'); progress('pai', 'done'); progress('grade', 'done'); progress('bling', 'done'); progress('comparando', 'done');
   const expectedComponents = components.map(item => ({ produto: { id: item.bling.id }, quantidade: 1 }));
@@ -407,10 +414,17 @@ async function createKit(sku, deps, progress, edits = {}) {
   }
   progress('gravando', 'running');
   const name = `KIT - ${components.map(item => item.local.name).join(' + ')}`.slice(0, 180);
-  const images = components.map(item => item.local.image).filter(Boolean);
+  const images = [...new Set(components.flatMap(item => item.images || [item.local.image]).filter(Boolean))].slice(0, 20);
   const availability = Math.max(0, Math.floor(Math.min(...components.map(item => item.local.stock))));
   const structureBody = { tipoEstoque: 'V', lancamentoEstoque: 'M', componentes: expectedComponents };
-  const body = applyProductEdits({ nome: name, codigo: sku, preco: components.reduce((sum, item) => sum + item.local.price, 0), tipo: 'P', situacao: 'A', formato: 'E', tipoEstoque: 'V', estrutura: structureBody, marca: 'Puket', categoria: { id: DEFAULT_CATEGORY_ID }, tributacao: { ncm: DEFAULT_NCM }, ...(images.length ? { midia: media(images) } : {}) }, edits);
+  const specs = productSpecs(name);
+  const body = applyProductEdits({
+    nome: name, codigo: sku, preco: components.reduce((sum, item) => sum + item.local.price, 0),
+    tipo: 'P', situacao: 'A', formato: 'E', tipoEstoque: 'V', estrutura: structureBody,
+    unidade: 'UN', condicao: 0, marca: 'Puket', categoria: { id: DEFAULT_CATEGORY_ID },
+    dimensoes: specs.dimensoes, pesoLiquido: specs.pesoLiquido, pesoBruto: specs.pesoBruto,
+    tributacao: { ncm: DEFAULT_NCM }, ...(images.length ? { midia: media(images) } : {}),
+  }, edits);
   let kit = existing;
   if (kit?.id) {
     const detailResponse = await deps.blingRequest('GET', `/produtos/${kit.id}`);
@@ -440,13 +454,15 @@ async function previewKit(sku, deps) {
   for (const componentSku of componentSkus) {
     const group = await loadGroup(componentSku, deps, () => {});
     const local = group.items.find(item => item.base === componentSku || item.childSku === componentSku || item.barcode === componentSku) || group.items[0];
+    const componentCatalog = await catalogContent(group, componentSku, deps);
+    const componentImages = [...new Set([...componentCatalog.images, local.image].filter(Boolean))].slice(0, 20);
     let found = await findBlingExact(deps.blingRequest, local.childSku) || await findBlingExact(deps.blingRequest, componentSku);
     let status = found ? 'existing' : 'missing';
     if (!found && local.barcode) {
       const elsewhere = await findBlingExact(deps.blingRequest, local.barcode);
       if (elsewhere) { found = elsewhere; status = 'duplicate'; warnings.push(`O GTIN ${local.barcode} já pertence a ${elsewhere.codigo || elsewhere.id}.`); }
     }
-    components.push({ requestedSku: componentSku, parentSku: group.parentSku, childSku: local.childSku, barcode: local.barcode, name: local.name, image: local.image, price: local.price, stock: local.stock, status, blingId: found?.id || null, blingSku: text(found?.codigo) });
+    components.push({ requestedSku: componentSku, parentSku: group.parentSku, childSku: local.childSku, barcode: local.barcode, name: local.name, image: componentImages[0] || local.image, images: componentImages, price: local.price, stock: local.stock, status, blingId: found?.id || null, blingSku: text(found?.codigo) });
   }
   let structureStatus = existingKit ? 'missing' : 'new';
   let existingDetail = null;
@@ -467,7 +483,7 @@ async function previewKit(sku, deps) {
   const suggestedName = `KIT - ${components.map(item => item.name).join(' + ')}`.slice(0, 180);
   const name = text(existingDetail?.nome) || suggestedName;
   const specs = productSpecs(name);
-  const images = [...new Set([...components.map(item => item.image).filter(Boolean), ...blingImages(existingDetail)])];
+  const images = [...new Set([...components.flatMap(item => item.images || [item.image]).filter(Boolean), ...blingImages(existingDetail)])].slice(0, 20);
   return { kind: 'kit', operation: 'criar-kit', requestedSku: sku, canApprove: !warnings.length, kit: { sku, exists: structureStatus === 'valid', productExists: Boolean(existingKit), structureStatus, name, description: text(existingDetail?.descricaoComplementar) || `Kit composto por:\n${components.map(item => `• ${item.name}`).join('\n')}`, price: number(existingDetail?.preco) || components.reduce((sum, item) => sum + item.price, 0), images, ncm: text(existingDetail?.tributacao?.ncm || DEFAULT_NCM), categoryId: existingDetail?.categoria?.id || DEFAULT_CATEGORY_ID, dimensions: { width: number(existingDetail?.dimensoes?.largura) || specs.dimensoes.largura, height: number(existingDetail?.dimensoes?.altura) || specs.dimensoes.altura, depth: number(existingDetail?.dimensoes?.profundidade) || specs.dimensoes.profundidade, netWeight: number(existingDetail?.pesoLiquido) || specs.pesoLiquido, grossWeight: number(existingDetail?.pesoBruto) || specs.pesoBruto }, availability: Math.max(0, Math.floor(Math.min(...components.map(item => item.stock)))) }, components, warnings };
 }
 
